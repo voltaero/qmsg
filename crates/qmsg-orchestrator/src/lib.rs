@@ -492,6 +492,17 @@ impl Orchestrator {
         self.browser = Some(Arc::new(Browser::new(config)));
     }
 
+    pub(crate) fn provider_running(&self, name: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|session| session.id.name == name)
+    }
+    pub(crate) fn forget_provider(&self, name: &str) -> Result<(), String> {
+        self.secrets.clear(name)
+    }
+
     /// Starts a provider on its own thread.
     ///
     /// Events from the provider, including its exit, are sent to `events`.

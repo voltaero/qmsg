@@ -30,6 +30,36 @@ import Testing
         let conversation = store.conversation(key)
         #expect(conversation.loaded)
 
+        // Account changes go through the paired API and update an open Watch stream.
+        let catalog = try await store.providerCatalog()
+        let echoType = try #require(catalog.types.first { $0.id == "echo" })
+        #expect(catalog.accounts.contains { $0.name == "echo" })
+        let accountName = "echo-test-" + UUID().uuidString.prefix(8).lowercased()
+        try await store.configureProvider(name: accountName, type: echoType.id, settings: echoType.defaults, enabled: true, label: "Test account")
+        try await until("new echo account") { store.providers[accountName]?.status == .ready }
+        let firstInstance = try #require(store.providers[accountName]?.id.instance)
+        try await store.configureProvider(name: accountName, type: echoType.id, settings: echoType.defaults, enabled: false)
+        #expect(store.providers[accountName] == nil)
+        let disabledCatalog = try await store.providerCatalog()
+        #expect(disabledCatalog.accounts.contains { $0.name == accountName && !$0.enabled && $0.label == "Test account" })
+        try await store.configureProvider(name: accountName, type: echoType.id, settings: echoType.defaults, enabled: true, label: "Renamed account")
+        try await until("restarted echo account") { store.providers[accountName]?.status == .ready }
+        #expect(store.providers[accountName]?.id.instance != firstInstance)
+        try await store.removeProvider(name: accountName)
+        #expect(store.providers[accountName] == nil)
+        #expect(!(try await store.providerCatalog()).accounts.contains { $0.name == accountName })
+
+        // The contact picker hides completion and verification behind normal chat tasks.
+        let open = try #require(try await store.functions(.organization(organization.id), provider: "echo").first { $0.action == .openChannel })
+        let membersInput = try #require(open.inputs.first { $0.id == StandardInput.members })
+        let contacts = try await store.complete(open, input: membersInput, context: .organization(organization.id), arguments: [:], query: "", provider: "echo")
+        let member = try #require(contacts.first?.value.textValue)
+        let request = VerificationRequest(call: .init(function: try #require(membersInput.verification), context: .organization(organization.id), arguments: [StandardInput.members: .list([.text(member)])]), input: .init(function: open.id, input: membersInput.id), value: .text(member))
+        let verified = try await store.execute(.verify(request), provider: "echo")
+        guard case .verified(.valid) = try verified.result.get() else { Issue.record("Contact verification failed"); return }
+        let opened = try await store.openChannel(provider: "echo", organization: organization.id, members: [member])
+        #expect(opened == key)
+
         // A text send settles its pending entry and the server echoes it.
         let text = "hello \(UUID().uuidString.prefix(8))"
         store.send(text: text, to: key)
@@ -67,6 +97,15 @@ import Testing
             try await until("reaction") { conversation.message(sent.id)?.reactions.first?.key == "👍" }
             #expect(conversation.message(sent.id)?.reactions.first?.count == 1)
         }
+
+        // Editing and deleting use the message's own declared actions.
+        let context = FunctionContext.message(channel: key.channel, id: sent.id)
+        let edit = try #require(functions.first { $0.action == .editMessage })
+        _ = try await store.call(edit, context: context, arguments: [StandardInput.content: .content([.text("edited message")])], provider: "echo").get()
+        try await until("edited message") { conversation.message(sent.id)?.content.first?.text == "edited message" }
+        let delete = try #require(functions.first { $0.action == .deleteMessage })
+        _ = try await store.call(delete, context: context, arguments: [:], provider: "echo").get()
+        try await until("deleted message") { conversation.message(sent.id) == nil }
 
         // Rotation with a persisted secret yields the proposed token.
         let account = try #require(store.account)

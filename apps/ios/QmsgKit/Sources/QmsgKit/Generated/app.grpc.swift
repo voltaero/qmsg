@@ -72,6 +72,45 @@ public enum Qmsg_App_V1_App: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "ProviderCatalog" metadata.
+        public enum ProviderCatalog: Sendable {
+            /// Request type for "ProviderCatalog".
+            public typealias Input = Qmsg_App_V1_Empty
+            /// Response type for "ProviderCatalog".
+            public typealias Output = Qmsg_App_V1_Data
+            /// Descriptor for "ProviderCatalog".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "qmsg.app.v1.App"),
+                method: "ProviderCatalog",
+                type: .unary
+            )
+        }
+        /// Namespace for "ConfigureProvider" metadata.
+        public enum ConfigureProvider: Sendable {
+            /// Request type for "ConfigureProvider".
+            public typealias Input = Qmsg_App_V1_ProviderConfiguration
+            /// Response type for "ConfigureProvider".
+            public typealias Output = Qmsg_App_V1_Empty
+            /// Descriptor for "ConfigureProvider".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "qmsg.app.v1.App"),
+                method: "ConfigureProvider",
+                type: .unary
+            )
+        }
+        /// Namespace for "RemoveProvider" metadata.
+        public enum RemoveProvider: Sendable {
+            /// Request type for "RemoveProvider".
+            public typealias Input = Qmsg_App_V1_ProviderName
+            /// Response type for "RemoveProvider".
+            public typealias Output = Qmsg_App_V1_Empty
+            /// Descriptor for "RemoveProvider".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "qmsg.app.v1.App"),
+                method: "RemoveProvider",
+                type: .unary
+            )
+        }
         /// Namespace for "Snapshot" metadata.
         public enum Snapshot: Sendable {
             /// Request type for "Snapshot".
@@ -156,6 +195,9 @@ public enum Qmsg_App_V1_App: Sendable {
             Rotate.descriptor,
             Devices.descriptor,
             Revoke.descriptor,
+            ProviderCatalog.descriptor,
+            ConfigureProvider.descriptor,
+            RemoveProvider.descriptor,
             Snapshot.descriptor,
             Watch.descriptor,
             Execute.descriptor,
@@ -257,6 +299,63 @@ extension Qmsg_App_V1_App {
         func revoke<Result>(
             request: GRPCCore.ClientRequest<Qmsg_App_V1_RevokeRequest>,
             serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_RevokeRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Empty>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ProviderCatalog" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_Empty` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_Empty` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Data` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        func providerCatalog<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_Empty>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_Empty>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Data>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Data>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ConfigureProvider" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_ProviderConfiguration` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_ProviderConfiguration` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Empty` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        func configureProvider<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderConfiguration>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_ProviderConfiguration>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Empty>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "RemoveProvider" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_ProviderName` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_ProviderName` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Empty` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        func removeProvider<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderName>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_ProviderName>,
             deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Empty>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result
@@ -511,6 +610,96 @@ extension Qmsg_App_V1_App {
             try await self.client.unary(
                 request: request,
                 descriptor: Qmsg_App_V1_App.Method.Revoke.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "ProviderCatalog" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_Empty` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_Empty` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Data` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func providerCatalog<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_Empty>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_Empty>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Data>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Data>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Qmsg_App_V1_App.Method.ProviderCatalog.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "ConfigureProvider" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_ProviderConfiguration` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_ProviderConfiguration` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Empty` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func configureProvider<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderConfiguration>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_ProviderConfiguration>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Empty>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Qmsg_App_V1_App.Method.ConfigureProvider.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "RemoveProvider" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Qmsg_App_V1_ProviderName` message.
+        ///   - serializer: A serializer for `Qmsg_App_V1_ProviderName` messages.
+        ///   - deserializer: A deserializer for `Qmsg_App_V1_Empty` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response and returns its result to
+        ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+        ///       already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func removeProvider<Result>(
+            request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderName>,
+            serializer: some GRPCCore.MessageSerializer<Qmsg_App_V1_ProviderName>,
+            deserializer: some GRPCCore.MessageDeserializer<Qmsg_App_V1_Empty>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Qmsg_App_V1_App.Method.RemoveProvider.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -801,6 +990,81 @@ extension Qmsg_App_V1_App.ClientProtocol {
         )
     }
 
+    /// Call the "ProviderCatalog" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Qmsg_App_V1_Empty` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func providerCatalog<Result>(
+        request: GRPCCore.ClientRequest<Qmsg_App_V1_Empty>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Data>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.providerCatalog(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Qmsg_App_V1_Empty>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Qmsg_App_V1_Data>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ConfigureProvider" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Qmsg_App_V1_ProviderConfiguration` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func configureProvider<Result>(
+        request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderConfiguration>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.configureProvider(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Qmsg_App_V1_ProviderConfiguration>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Qmsg_App_V1_Empty>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "RemoveProvider" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Qmsg_App_V1_ProviderName` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func removeProvider<Result>(
+        request: GRPCCore.ClientRequest<Qmsg_App_V1_ProviderName>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.removeProvider(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Qmsg_App_V1_ProviderName>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Qmsg_App_V1_Empty>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "Snapshot" method.
     ///
     /// - Parameters:
@@ -1063,6 +1327,93 @@ extension Qmsg_App_V1_App.ClientProtocol {
             metadata: metadata
         )
         return try await self.revoke(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ProviderCatalog" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func providerCatalog<Result>(
+        _ message: Qmsg_App_V1_Empty,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Data>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Qmsg_App_V1_Empty>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.providerCatalog(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ConfigureProvider" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func configureProvider<Result>(
+        _ message: Qmsg_App_V1_ProviderConfiguration,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Qmsg_App_V1_ProviderConfiguration>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.configureProvider(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "RemoveProvider" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response and returns its result to
+    ///       the caller. Returning from the closure will cancel the RPC if it hasn't
+    ///       already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func removeProvider<Result>(
+        _ message: Qmsg_App_V1_ProviderName,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Qmsg_App_V1_Empty>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Qmsg_App_V1_ProviderName>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.removeProvider(
             request: request,
             options: options,
             onResponse: handleResponse

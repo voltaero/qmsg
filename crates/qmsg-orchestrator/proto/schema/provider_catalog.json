@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "Field": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "secret": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "required",
+        "secret"
+      ],
+      "type": "object"
+    },
+    "ManagedProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "type",
+        "enabled",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "ProviderType": {
+      "properties": {
+        "defaults": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "fields",
+        "defaults"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "accounts": {
+      "items": {
+        "$ref": "#/$defs/ManagedProvider"
+      },
+      "type": "array"
+    },
+    "types": {
+      "items": {
+        "$ref": "#/$defs/ProviderType"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "types",
+    "accounts"
+  ],
+  "title": "Catalog",
+  "type": "object"
+}

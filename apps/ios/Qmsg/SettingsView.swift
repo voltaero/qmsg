@@ -3,7 +3,6 @@ import QmsgKit
 
 struct SettingsView: View {
     @Environment(QmsgStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
     @State private var devices: [PairedDevice] = []
     @State private var error: String?
     @State private var loading = false
@@ -13,38 +12,51 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Server") {
-                if let endpoint = store.account?.endpoint {
-                    Text("\(endpoint.host):\(endpoint.port)").textSelection(.enabled)
+            Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "server.rack").font(.title3).foregroundStyle(.tint).frame(width: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let endpoint = store.account?.endpoint {
+                            Text(endpoint.host).textSelection(.enabled)
+                        }
+                        serverStatus
+                    }
                 }
-                ConnectionLabel(link: store.link)
-            }
-            Section("Paired devices") {
-                if loading { ProgressView() }
+                if store.link != .live && store.link != .connecting {
+                    Button("Reconnect") { store.resume() }
+                }
+            } header: { Text("Server") }
+            Section {
+                if loading && devices.isEmpty { ProgressView() }
                 ForEach(devices) { device in
-                    HStack {
-                        VStack(alignment: .leading) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "iphone").foregroundStyle(.secondary).frame(width: 30)
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(device.name)
                             if device.id == store.account?.deviceID { Text("This device").font(.caption).foregroundStyle(.secondary) }
                         }
-                        Spacer()
+                    }
+                    .swipeActions {
                         Button("Revoke", role: .destructive) { revoke = device }.disabled(busy)
                     }
                 }
-                Button("Refresh devices") { Task { await load() } }.disabled(loading || busy)
-                if let error { Text(error).foregroundStyle(.red) }
+                if let error { ErrorNote(message: error) { self.error = nil } }
+            } header: {
+                Text("Paired devices")
+            } footer: {
+                Text("Swipe a device to revoke its access.")
             }
             Section {
                 Button("Unpair this device", role: .destructive) { confirmUnpair = true }.disabled(busy)
             } footer: { Text("You will need a new pairing code to connect again.") }
         }
         .navigationTitle("Settings")
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .refreshable { await load() }
         .task { await load() }
         .confirmationDialog("Unpair this device?", isPresented: $confirmUnpair, titleVisibility: .visible) {
             Button("Unpair", role: .destructive) {
                 busy = true
-                Task { await store.unpair(); busy = false; dismiss() }
+                Task { await store.unpair(); busy = false }
             }
         }
         .confirmationDialog("Revoke \(revoke?.name ?? "device")?", isPresented: Binding(get: { revoke != nil }, set: { if !$0 { revoke = nil } }), titleVisibility: .visible) {
@@ -55,7 +67,7 @@ struct SettingsView: View {
                         defer { busy = false }
                         do {
                             try await store.revoke(device)
-                            if store.isPaired { await load() } else { dismiss() }
+                            if store.isPaired { await load() }
                         } catch { self.error = QmsgStore.describe(error) }
                     }
                 }
@@ -69,5 +81,15 @@ struct SettingsView: View {
         defer { loading = false }
         do { devices = try await store.devices() }
         catch { self.error = QmsgStore.describe(error) }
+    }
+
+    @ViewBuilder
+    private var serverStatus: some View {
+        switch store.link {
+        case .live: Label("Connected", systemImage: "circle.fill").foregroundStyle(.green)
+        case .connecting: Label("Connecting…", systemImage: "circle.dotted").foregroundStyle(.secondary)
+        case .idle: Label("Offline", systemImage: "circle").foregroundStyle(.secondary)
+        case .retrying(let error): Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        }
     }
 }

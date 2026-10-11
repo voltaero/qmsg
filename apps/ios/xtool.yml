@@ -1,0 +1,4 @@
+version: 1
+bundleID: app.qmsg.ios
+infoPath: Qmsg/Info.plist
+iconPath: Qmsg/Assets.xcassets/AppIcon.appiconset/AppIcon.png

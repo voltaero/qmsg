@@ -7,7 +7,36 @@ The app pairs by QR code or pasted JSON, keeps its device token in Keychain,
 shows accounts and channels, and streams messages while it is active. Chats
 include older history, replies, reactions, text sends, file uploads, pending
 send status, and attachment preview and sharing. Account, channel and message
-forms use the actions each provider offers. Settings lists and revokes devices.
+controls use the actions each provider offers. Accounts manages chat networks;
+Settings manages the server connection and paired devices.
+
+## Build and sideload on Linux
+
+The Podman wrapper uses Swift 6.4, xtool 1.20.1, and usbmuxd, following the
+working Garmin app setup. It passes the connected phone's USB bus into the
+container. The first run builds the image; setup stores the SDK, Apple login,
+and phone pairing outside the repo.
+
+```sh
+apps/ios/xtool.sh setup
+apps/ios/xtool.sh devices
+apps/ios/xtool.sh dev run --usb
+```
+
+After installation, open qmsg on the phone. xtool may add its signing-team
+prefix to the installed bundle ID.
+
+You can reuse a configured xtool state directory instead of logging in and
+importing the SDK again. On Claudio's machine:
+
+```sh
+QMSG_IOS_STATE="$HOME/.local/share/tub-xtool" apps/ios/xtool.sh dev run --usb
+```
+
+`QMSG_IOS_IMAGE` can select another prepared image. `Package.swift` and
+`xtool.yml` define the Linux app build; `project.yml` defines the Xcode build.
+The linker SDK version matches the existing iOS 27.1 SDK. Build files, IPAs,
+credentials, and pairing records stay out of git.
 
 ## Build on a Mac
 
@@ -51,11 +80,52 @@ needs a supported device and camera access; pasted JSON also works in the
 simulator. The app checks the server certificate pin and endpoint host, and
 uses normal certificate trust when the payload has no private certificate.
 
-Tap an account in Chats to see its login state and account actions. Browser
-login requires a viewer URL reachable from the phone, as described in the API
-setup guide. Long login calls allow ten minutes. Structured function inputs
-outside the built-in text, integer, boolean, choice and text-list fields use
-qmsg's tagged `Value` JSON (for example `{"Text":"hello"}`).
+## Using the app
+
+The app has three tabs:
+
+- **Chats** is one inbox across accounts. Recent chats come first, then each
+  account's direct messages and its servers, which expand to show channels.
+  Chips at the top filter by account. Accounts that need you, such as one
+  waiting for sign-in, show as a banner that opens that account.
+- **Accounts** lists every account on the server with its network and status.
+  Tap **+** to add one: pick a network your server has installed, give it a
+  name like "Work", and fill in any connection fields. You can add several
+  accounts of the same network. Open an account to sign in, rename it, edit
+  its connection details, turn it off, sign out or remove it. Swipe a row to
+  turn it off or remove it. Removing asks first.
+- **Settings** shows the server connection and paired devices, and unpairs
+  this phone.
+
+Tap the compose button in Chats to search contacts and start a conversation.
+Long-press a message to reply, react, copy, edit or delete. Type **@** in a
+Discord or Echo chat to pick someone to mention; mentions in messages show as
+names. Server channels read as a feed, direct chats as bubbles. The chat stays
+where you are while reading older messages and shows a jump-to-latest button
+instead of scrolling for every new message. A send that
+fails shows **Not sent** with **Retry**. A send the server couldn't confirm
+shows **Could not confirm delivery** with **Reload chat**; it may have gone
+through, so the app never resends it on its own. Browser login needs a viewer
+URL reachable from the phone, as described in the API setup guide. Long login
+calls allow ten minutes.
+
+## Connect Discord
+
+Build the provider with `sdk/go/build.sh providers/discord target/go/discord.wasm`
+and add it to your server config as shown in the
+[Discord provider guide](../../providers/discord/README.md).
+For a phone, set `browser.port` and an HTTPS `browser.viewer_url`, and forward
+only `/view/` to the local browser service. See the
+[browser login guide](../../services/browser-login/README.md).
+
+In qmsg, tap the **Sign in to Discord** banner in Chats (or open the account in
+**Accounts**), then **Sign in** and **Open sign-in page**.
+The page opens inside the app. For a private server certificate, the viewer
+must use the server's paired host and certificate. The app checks the saved
+certificate pin and normal TLS checks before loading it. Complete Discord's
+login there; the server stores the session and starts syncing your chats.
+To add a second Discord account, tap **+** in **Accounts**, choose Discord and
+give it a different name, then sign in to it the same way.
 
 ## Tests
 
@@ -91,6 +161,7 @@ A delivery-unknown send stays visible until a server event settles it or you
 remove it. Check the chat before composing another copy. Pending sends live in
 memory and do not survive quitting the app.
 
-The client and live tests have been checked on Linux. The SwiftUI sources pass
-Swift's syntax check, but an Xcode build and a device/simulator check still need
-to run on a Mac.
+The client and live tests pass on Linux. The full iOS app also builds with the
+Garmin xtool toolchain, signs, and installs on the connected iPhone. The Linux
+build needs an explicit Quick Look SwiftUI overlay import for file previews.
+Xcode and simulator builds have not been checked.

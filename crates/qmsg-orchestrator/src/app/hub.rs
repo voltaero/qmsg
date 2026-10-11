@@ -6,7 +6,7 @@ use super::{
 use crate::{Directory, ProviderEvent, ProviderHandle, ProviderId};
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
@@ -22,14 +22,16 @@ struct State {
     ring: VecDeque<Arc<Update>>,
     sequence: u64,
     bytes: usize,
+    config_sequence: u64,
     statuses: BTreeMap<String, qmsg_types::ProviderStatus>,
 }
 pub struct Hub {
     pub epoch: String,
     state: Mutex<State>,
     updates: broadcast::Sender<Arc<Update>>,
+    changes: broadcast::Sender<()>,
     barriers: mpsc::Sender<oneshot::Sender<u64>>,
-    pub providers: BTreeMap<String, Arc<ProviderHandle>>,
+    providers: RwLock<BTreeMap<String, Arc<ProviderHandle>>>,
     pub media: Arc<Media>,
 }
 impl Hub {
@@ -39,6 +41,7 @@ impl Hub {
         media: Arc<Media>,
     ) -> Arc<Self> {
         let (updates, _) = broadcast::channel(128);
+        let (changes, _) = broadcast::channel(128);
         let (barriers, mut requests) = mpsc::channel::<oneshot::Sender<u64>>(64);
         let providers: BTreeMap<_, _> = providers
             .into_iter()
@@ -52,14 +55,16 @@ impl Hub {
                 ring: VecDeque::new(),
                 sequence: 0,
                 bytes: 0,
+                config_sequence: 0,
                 statuses: BTreeMap::new(),
             }),
             updates,
+            changes,
             barriers,
-            providers,
+            providers: RwLock::new(providers),
             media,
         });
-        for p in hub.providers.values() {
+        for p in hub.providers.read().unwrap().values() {
             hub.refresh(p, &mut hub.state.lock().unwrap());
         }
         let weak = Arc::downgrade(&hub);
@@ -92,8 +97,8 @@ impl Hub {
             | ProviderEvent::Status { provider, .. }
             | ProviderEvent::Exited { provider, .. } => provider.clone(),
         };
-        let Some(p) = self
-            .providers
+        let providers = self.providers.read().unwrap();
+        let Some(p) = providers
             .get(&provider.name)
             .filter(|p| p.id() == &provider)
         else {
@@ -123,7 +128,9 @@ impl Hub {
             }
             _ => {}
         }
-        self.refresh(p, &mut state);
+        if !matches!(event, ProviderEvent::Message { .. }) {
+            self.refresh(p, &mut state);
+        }
         state.sequence += 1;
         let update = Arc::new(Update {
             sequence: state.sequence,
@@ -143,12 +150,47 @@ impl Hub {
     pub fn provider(&self, id: Option<&wire::Provider>) -> Result<Arc<ProviderHandle>, Status> {
         let id = id.ok_or_else(|| Status::invalid_argument("provider required"))?;
         self.providers
+            .read()
+            .unwrap()
             .get(&id.name)
             .filter(|p| p.id().instance == id.instance)
             .cloned()
             .ok_or_else(|| {
                 Status::failed_precondition("provider instance changed; refresh snapshot")
             })
+    }
+    pub fn start_provider(
+        &self,
+        spawn: impl FnOnce() -> anyhow::Result<ProviderHandle>,
+    ) -> anyhow::Result<Arc<ProviderHandle>> {
+        // Register before the event consumer can read the new instance.
+        let mut providers = self.providers.write().unwrap();
+        let mut provider = spawn()?;
+        provider.set_timeout(None);
+        let provider = Arc::new(provider);
+        let mut state = self.state.lock().unwrap();
+        let name = provider.id().name.clone();
+        if let Some(old) = providers.insert(name.clone(), provider.clone()) {
+            state.directory.remove_provider(old.id());
+        }
+        state.statuses.remove(&name);
+        self.refresh(&provider, &mut state);
+        state.sequence += 1;
+        state.config_sequence = state.sequence;
+        let _ = self.changes.send(());
+        Ok(provider)
+    }
+    pub fn remove_provider(&self, name: &str) {
+        let mut providers = self.providers.write().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if let Some(old) = providers.remove(name) {
+            state.directory.remove_provider(old.id());
+            state.views.remove(name);
+            state.statuses.remove(name);
+            state.sequence += 1;
+            state.config_sequence = state.sequence;
+            let _ = self.changes.send(());
+        }
     }
     fn snapshot_locked(&self, device: &str, state: &State) -> Result<wire::Event, Status> {
         let mut providers = Vec::new();
@@ -177,11 +219,13 @@ impl Hub {
     > {
         let state = self.state.lock().unwrap();
         let mut receiver = self.updates.subscribe();
+        let mut changes = self.changes.subscribe();
         let first_retained = state
             .ring
             .front()
             .map_or(state.sequence + 1, |u| u.sequence);
         let initial: Vec<wire::Event> = if request.epoch != self.epoch
+            || request.after_sequence < state.config_sequence
             || request.after_sequence > state.sequence
             || request.after_sequence.saturating_add(1) < first_retained
         {
@@ -198,10 +242,18 @@ impl Hub {
         let hub = self.clone();
         Ok(
             async_stream::try_stream! {let mut delivered=request.after_sequence;for event in initial {auth.check(&token)?;delivered=event.sequence;yield event;}let mut heartbeat=tokio::time::interval(std::time::Duration::from_secs(15));loop{
-            let update=tokio::select!{update=receiver.recv()=>Some(update),_=heartbeat.tick()=>None};
+            let (changed, update)=tokio::select! {
+                _=changes.recv()=>(true,None),
+                update=receiver.recv()=>(false,Some(update)),
+                _=heartbeat.tick()=>(false,None)
+            };
             auth.check(&token)?;
-            let event=if let Some(update)=update {let update=update.map_err(|_|Status::aborted("event stream fell behind; reconnect with cursor"))?;hub.event(&device,&update)?}else{let sequence=delivered;wire::Event{epoch:hub.epoch.clone(),sequence,body:Some(wire::event::Body::Heartbeat(true))}};
-            delivered=event.sequence;yield event;
+            let event=if changed {hub.snapshot(&device)?} else if let Some(update)=update {
+                let update=update.map_err(|_|Status::aborted("event stream fell behind; reconnect with cursor"))?;
+                if update.sequence <= delivered {continue;}
+                hub.event(&device,&update)?
+            } else {wire::Event{epoch:hub.epoch.clone(),sequence:delivered,body:Some(wire::event::Body::Heartbeat(true))}};
+            delivered=delivered.max(event.sequence);yield event;
             }},
         )
     }
@@ -222,5 +274,77 @@ impl Hub {
             return self.state.lock().unwrap().sequence;
         }
         rx.await.unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qmsg_types::{Content, DirectoryUpdate, Message, MessageEvent, Organization, User};
+    #[tokio::test]
+    #[ignore = "run alone to measure message processing with a large directory"]
+    async fn message_traffic_with_large_directory_stays_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = crate::Orchestrator::new(dir.path(), crate::Encryption::Plaintext)
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let handle = Arc::new(
+            host.spawn(
+                crate::ProviderSpec {
+                    name: "test".into(),
+                    wasm: "unused.wasm".into(),
+                    settings: BTreeMap::new(),
+                },
+                tx,
+            )
+            .unwrap(),
+        );
+        let id = handle.id().clone();
+        let (_tx, rx) = mpsc::channel(8);
+        let hub = Hub::new(vec![handle], rx, Arc::new(Media::default()));
+        let users = (0..2000)
+            .map(|n| User {
+                id: n.to_string(),
+                name: format!("User {n}"),
+                username: None,
+                avatar: None,
+            })
+            .collect();
+        hub.apply(ProviderEvent::Directory {
+            provider: id.clone(),
+            update: DirectoryUpdate::OrganizationUpserted(Organization {
+                id: "org".into(),
+                name: "Server".into(),
+                icon: None,
+                me: None,
+                users,
+                channels: vec![],
+            }),
+        });
+        let started = std::time::Instant::now();
+        for n in 0..100 {
+            hub.apply(ProviderEvent::Message {
+                provider: id.clone(),
+                event: MessageEvent::Received(Message {
+                    id: n.to_string(),
+                    channel: qmsg_types::ChannelRef::new(Some("org"), "c"),
+                    author: "1".into(),
+                    sent_at: n,
+                    reply_to: None,
+                    content: vec![Content::Text("hello".into())],
+                    edited_at: None,
+                    reactions: vec![],
+                    nonce: None,
+                    email: None,
+                }),
+            });
+        }
+        let elapsed = started.elapsed();
+        eprintln!("100 messages with 2,000 known users: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "message processing stalls behind directory rebuilds: {elapsed:?}"
+        );
     }
 }

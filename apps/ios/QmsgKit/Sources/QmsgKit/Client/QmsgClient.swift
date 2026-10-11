@@ -144,6 +144,29 @@ public final class QmsgClient: Sendable {
         _ = try await app.revoke(request, metadata: auth(), options: options())
     }
 
+    // MARK: Accounts
+
+    public func providerCatalog() async throws -> ProviderCatalog {
+        let data = try await app.providerCatalog(Qmsg_App_V1_Empty(), metadata: auth(), options: options())
+        return try QmsgJSON.decode(ProviderCatalog.self, from: data.json)
+    }
+
+    public func configureProvider(name: String, type: String, settings: [String: String], enabled: Bool, label: String? = nil) async throws {
+        var request = Qmsg_App_V1_ProviderConfiguration()
+        request.name = name
+        request.type = type
+        request.label = label ?? ""
+        request.enabled = enabled
+        request.settingsJson = try QmsgJSON.encode(settings)
+        _ = try await app.configureProvider(request, metadata: auth(), options: options())
+    }
+
+    public func removeProvider(name: String) async throws {
+        var request = Qmsg_App_V1_ProviderName()
+        request.name = name
+        _ = try await app.removeProvider(request, metadata: auth(), options: options())
+    }
+
     // MARK: State
 
     /// The current directory. `token` overrides the client's, to probe a

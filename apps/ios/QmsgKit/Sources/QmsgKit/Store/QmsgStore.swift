@@ -36,6 +36,7 @@ public final class QmsgStore {
     public var visible: ChannelKey? {
         didSet {
             if let visible {
+                if oldValue != visible { remember(visible) }
                 activity[visible, default: .init(last: nil, unread: 0)].unread = 0
                 if conversations[visible]?.stale == true { Task { await loadLatest(visible) } }
             }
@@ -49,6 +50,7 @@ public final class QmsgStore {
     /// conversation is observable.
     @ObservationIgnored private var conversations: [ChannelKey: Conversation] = [:]
     private var watchTask: Task<Void, Never>?
+    private var opened: [ChannelKey] = []
     private var epoch = ""
     private var sequence: UInt64 = 0
 
@@ -60,6 +62,17 @@ public final class QmsgStore {
 
     public var sortedProviders: [ProviderState] {
         providers.values.sorted { $0.name.localizedLowercase < $1.name.localizedLowercase }
+    }
+
+    /// Recently opened chats keep their order when messages arrive elsewhere.
+    public var recentKeys: [ChannelKey] {
+        opened.filter { providers[$0.provider]?.channel($0.channel) != nil }.prefix(8).map { $0 }
+    }
+
+    private func remember(_ key: ChannelKey) {
+        opened.removeAll { $0 == key }
+        opened.insert(key, at: 0)
+        if opened.count > 32 { opened.removeLast() }
     }
 
     public var isPaired: Bool { account != nil && !needsPairing }
@@ -122,10 +135,28 @@ public final class QmsgStore {
     private func reset() {
         providers = [:]
         activity = [:]
+        opened = []
         conversations = [:]
         epoch = ""
         sequence = 0
         media.clear()
+    }
+
+    public func providerCatalog() async throws -> ProviderCatalog {
+        guard let client else { throw StoreError.notConnected }
+        return try await client.providerCatalog()
+    }
+
+    public func configureProvider(name: String, type: String, settings: [String: String], enabled: Bool, label: String? = nil) async throws {
+        guard let client else { throw StoreError.notConnected }
+        try await client.configureProvider(name: name, type: type, settings: settings, enabled: enabled, label: label)
+        apply(try await client.snapshot())
+    }
+
+    public func removeProvider(name: String) async throws {
+        guard let client else { throw StoreError.notConnected }
+        try await client.removeProvider(name: name)
+        apply(try await client.snapshot())
     }
 
     // MARK: Event stream
@@ -179,6 +210,7 @@ public final class QmsgStore {
     }
 
     private func apply(_ snapshot: Snapshot) {
+        guard snapshot.epoch != epoch || snapshot.sequence >= sequence else { return }
         epoch = snapshot.epoch
         sequence = snapshot.sequence
         providers = Dictionary(snapshot.providers.map { ($0.provider.name, ProviderState($0)) }) { $1 }
@@ -323,6 +355,12 @@ public final class QmsgStore {
         return conversation
     }
 
+    public func loadIfNeeded(_ key: ChannelKey) async {
+        let conversation = conversation(key)
+        guard !conversation.loaded || conversation.stale else { return }
+        await loadLatest(key)
+    }
+
     /// Loads the newest page of a channel, replacing what was loaded.
     public func loadLatest(_ key: ChannelKey) async {
         let conversation = conversation(key)
@@ -382,6 +420,14 @@ public final class QmsgStore {
         }
     }
 
+    // 128 random bits in 22 URL-safe characters, within Discord's 25-character limit.
+    private static func sendNonce() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
+            .base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
     /// Sends text and files to a channel. The send shows as pending until
     /// the provider reports the message.
     public func send(text: String, attachments: [Attachment] = [], replyTo: String? = nil, to key: ChannelKey) {
@@ -395,7 +441,7 @@ public final class QmsgStore {
             content.append(Self.content(attachment.kind, Media(name: attachment.name, mime: attachment.mime, size: UInt64(attachment.data.count), source: .bytes([]))))
         }
         guard !content.isEmpty else { return }
-        let nonce = UUID().uuidString.lowercased()
+        let nonce = Self.sendNonce()
         let pending = PendingSend(id: nonce, content: content, replyTo: replyTo, operation: ActionOperation(), state: .sending, previews: previews, attachments: attachments)
         conversation(key).pending.append(pending)
         Task { await deliver(pending, attachments: attachments, to: key) }
@@ -406,7 +452,7 @@ public final class QmsgStore {
         let conversation = conversation(key)
         conversation.pending.removeAll { $0.id == pending.id }
         var again = pending
-        again.id = UUID().uuidString.lowercased()
+        again.id = Self.sendNonce()
         again.operation = ActionOperation()
         again.state = .sending
         again.sentID = nil
@@ -421,6 +467,7 @@ public final class QmsgStore {
     private func deliver(_ pending: PendingSend, attachments: [Attachment], to key: ChannelKey) async {
         let conversation = conversation(key)
         var content = pending.content
+        var submitted = false
         do {
             // Upload files first; the media handles are tied to this provider instance.
             var uploads = attachments.makeIterator()
@@ -434,6 +481,7 @@ public final class QmsgStore {
                 content[i] = Self.content(attachment.kind, uploaded)
             }
             conversation.update(nonce: pending.id) { $0.content = content }
+            submitted = true
             let result = try await execute(
                 .send(channel: key.channel, replyTo: pending.replyTo, content: content, nonce: pending.id),
                 provider: key.provider, operation: pending.operation
@@ -452,7 +500,7 @@ public final class QmsgStore {
             // Without an answer, the journal can't say whether it was sent.
             let message = Self.describe(error)
             conversation.update(nonce: pending.id) {
-                $0.state = $0.content.contains(where: Self.isUnsentUpload) ? .failed(message) : .unknown(message)
+                $0.state = !submitted || error is StoreError || error.rpcCode == .invalidArgument || $0.content.contains(where: Self.isUnsentUpload) ? .failed(message) : .unknown(message)
             }
         }
     }
@@ -494,9 +542,9 @@ public final class QmsgStore {
 
     /// Suggestions for a function input.
     public func complete(_ function: Function, input: FunctionInput, context: FunctionContext, arguments: Arguments, query: String, provider: String) async throws -> [CompletionItem] {
-        guard input.completion != nil else { return [] }
+        guard let helper = input.completion else { return [] }
         let request = CompletionRequest(
-            call: FunctionCall(function: function.id, context: context, arguments: arguments),
+            call: FunctionCall(function: helper, context: context, arguments: arguments),
             input: FunctionInputRef(function: function.id, input: input.id),
             query: query, limit: 20
         )

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -482,11 +484,13 @@ func (p *provider) trySend(ctx context.Context, ref qmsg.ChannelRef, content []q
 	}
 	m, serr := client(st, ctx).SendMessageComplex(ch.ID, data)
 	if serr != nil {
-		return "", commandError(serr, qmsg.ErrUnknownChannel{Channel: ref}), true
+		var response *httputil.HTTPError
+		submitted := !(errors.As(serr, &response) && response.Status >= 400 && response.Status < 500 && response.Status != http.StatusRequestTimeout)
+		return "", commandError(serr, qmsg.ErrUnknownChannel{Channel: ref}), submitted
 	}
 	m.GuildID = ch.GuildID
 	st.Cabinet.MessageSet(m, false)
-	p.knowUser(orgOf(ch.GuildID), m.Author)
+	p.knowMessageUsers(*m)
 	p.emit(qmsg.Received{Message: message(*m)})
 	return m.ID.String(), nil, true
 }
@@ -528,6 +532,7 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 	page := qmsg.HistoryPage{}
 	for _, m := range msgs {
 		m.GuildID = ch.GuildID
+		p.knowMessageUsers(m)
 		page.Messages = append(page.Messages, message(m))
 	}
 	if len(msgs) == int(n) {
@@ -550,6 +555,7 @@ func (p *provider) getMessage(ctx context.Context, ref qmsg.ChannelRef, id strin
 		return nil, err
 	}
 	m.GuildID = ch.GuildID
+	p.knowMessageUsers(*m)
 	return qmsg.ReplyMessage{Message: message(*m)}, nil
 }
 

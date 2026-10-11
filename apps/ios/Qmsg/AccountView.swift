@@ -3,53 +3,11 @@ import UIKit
 import CoreImage.CIFilterBuiltins
 import QmsgKit
 
-struct ActionsView: View {
-    @Environment(QmsgStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let provider: String
-    let context: FunctionContext
-    var initialContent: [Content] = []
-    @State private var functions: [Function] = []
-    @State private var loading = true
-    @State private var error: String?
-
-    var body: some View {
-        List {
-            if loading { ProgressView() }
-            if let error { Text(error).foregroundStyle(.red) }
-            ForEach(functions) { function in
-                NavigationLink {
-                    FunctionForm(provider: provider, context: context, function: function, initialContent: initialContent)
-                } label: {
-                    VStack(alignment: .leading) {
-                        Text(function.label)
-                        if !function.description.isEmpty { Text(function.description).font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-            }
-            if !loading && functions.isEmpty && error == nil { Text("No actions available here.").foregroundStyle(.secondary) }
-        }
-        .navigationTitle("Actions")
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-        .task { await load() }
-        .refreshable { await load() }
-    }
-
-    private func load() async {
-        loading = true
-        error = nil
-        defer { loading = false }
-        do { functions = try await store.functions(context, provider: provider) }
-        catch { self.error = QmsgStore.describe(error) }
-    }
-}
-
-struct FunctionForm: View {
+struct SignInForm: View {
     @Environment(QmsgStore.self) private var store
     let provider: String
     let context: FunctionContext
     let function: Function
-    var initialContent: [Content] = []
     @State private var fields: [String: String] = [:]
     @State private var choices: [String: Value] = [:]
     @State private var flags: [String: Bool] = [:]
@@ -71,12 +29,12 @@ struct FunctionForm: View {
                 } footer: {
                     if !input.description.isEmpty { Text(input.description) }
                     if input.valueType == .list(.text) { Text("Enter one item per line.") }
-                    if needsJSON(input) { Text("This input takes a structured value. See the server's function schema for its JSON format.") }
+
                 }
             }
             Section {
-                if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if let result { Text(result).textSelection(.enabled) }
+                if let error { ErrorNote(message: error) { self.error = nil } }
+                if let result { Label(result, systemImage: "checkmark.circle.fill").foregroundStyle(.green).textSelection(.enabled) }
                 Button {
                     run()
                 } label: {
@@ -85,11 +43,7 @@ struct FunctionForm: View {
             }
         }
         .navigationTitle(function.label)
-        .onAppear {
-            if function.action == .editMessage && fields[StandardInput.content] == nil {
-                fields[StandardInput.content] = initialContent.compactMap(\.text).joined(separator: "\n")
-            }
-        }
+
     }
 
     @ViewBuilder
@@ -117,13 +71,6 @@ struct FunctionForm: View {
         Binding(get: { fields[id] ?? "" }, set: { fields[id] = $0 })
     }
 
-    private func needsJSON(_ input: FunctionInput) -> Bool {
-        switch input.valueType {
-        case .text, .integer, .boolean, .content, .list(.text): false
-        default: true
-        }
-    }
-
     private func arguments() throws -> Arguments {
         var arguments: Arguments = [:]
         for input in function.inputs {
@@ -142,8 +89,7 @@ struct FunctionForm: View {
             case .content: arguments[input.id] = .content([.text(raw)])
             case .list(.text): arguments[input.id] = .list(raw.split(separator: "\n").map { .text(String($0)) })
             default:
-                do { arguments[input.id] = try JSONDecoder().decode(Value.self, from: Data(raw.utf8)) }
-                catch { throw StoreError.unsupported("Check the JSON for \(input.label).") }
+                throw StoreError.unsupported("This sign-in method is not supported yet.")
             }
         }
         return arguments
@@ -167,40 +113,37 @@ struct FunctionForm: View {
     }
 }
 
-struct ProviderView: View {
+/// What the network asks for to sign in: a page to open, a QR code to scan, or both.
+struct LoginStepView: View {
     @Environment(QmsgStore.self) private var store
-    let providerName: String
-
-    var body: some View {
-        List {
-            if let provider = store.providers[providerName] {
-                Section("Account") { Text(provider.status.label) }
-                if let step = provider.status.loginStep {
-                    Section("Log in") {
-                        LoginStepView(step: step)
-                    }
-                }
-                NavigationLink("Account actions") { ActionsView(provider: providerName, context: .provider) }
-                ForEach(provider.sortedOrganizations) { organization in
-                    NavigationLink("\(organization.name) actions") {
-                        ActionsView(provider: providerName, context: .organization(organization.id))
-                    }
-                }
-            } else { Text("This account is no longer available.") }
-        }.navigationTitle(providerName)
-    }
-}
-
-private struct LoginStepView: View {
+    @State private var showingLogin = false
     let step: LoginStep
+
     var body: some View {
-        Text(step.message)
+        Label {
+            Text(step.message)
+        } icon: {
+            Image(systemName: "person.badge.key.fill").foregroundStyle(.orange)
+        }
         if let link = step.link, let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased()) {
-            Link("Open login page", destination: url)
+            Button { showingLogin = true } label: {
+                Label("Open sign-in page", systemImage: "safari")
+            }
+            .sheet(isPresented: $showingLogin) {
+                NavigationStack {
+                    LoginBrowser(url: url, endpoint: store.account?.endpoint)
+                        .ignoresSafeArea(edges: .bottom)
+                        .navigationTitle("Sign in")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingLogin = false } } }
+                }
+            }
         }
         if let code = step.qrCode {
-            QRCodeView(code: code)
-            Text(code).font(.caption).textSelection(.enabled)
+            VStack(spacing: 8) {
+                QRCodeView(code: code)
+                Text("Scan with the app on your other device.").font(.caption).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity)
         }
     }
 }

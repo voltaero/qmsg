@@ -439,5 +439,5 @@ time; see `sdk/go/README.md`.
 ## iOS app
 
 The SwiftUI iPhone and iPad client lives in [apps/ios](apps/ios/README.md).
-Use XcodeGen on a Mac to generate the Xcode project, then build and pair it
-with your orchestrator.
+Build and sideload with xtool on Linux, or use XcodeGen and Xcode on a Mac.
+Then pair it with your orchestrator.

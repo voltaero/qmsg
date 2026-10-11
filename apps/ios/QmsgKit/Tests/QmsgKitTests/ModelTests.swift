@@ -3,6 +3,54 @@ import Testing
 @testable import QmsgKit
 
 @Suite struct ModelTests {
+    @MainActor @Test func pendingSendNonceFitsDiscordAndRetryGetsANewNonce() throws {
+        let store = QmsgStore(accounts: MemoryAccountStore())
+        let key = ChannelKey(provider: "discord", channel: ChannelRef(organization: nil, channel: "test"))
+        store.send(text: "test", to: key)
+        let pending = try #require(store.conversation(key).pending.first)
+        #expect(pending.id.utf8.count <= 25, "Discord rejects send nonces longer than 25 characters")
+        store.retry(pending, in: key)
+        let retry = try #require(store.conversation(key).pending.first)
+        #expect(retry.id.utf8.count <= 25)
+        #expect(retry.id != pending.id)
+    }
+
+    @MainActor @Test func recentDoesNotFollowTrafficInUnopenedServerChannels() {
+        let store = QmsgStore(accounts: MemoryAccountStore())
+        let id = ProviderID(name: "discord", instance: 1)
+        let org = OrganizationEntry(id: "org", name: "Server", icon: nil, scope: Scope(channels: ["visited": channel("visited"), "busy": channel("busy")]))
+        store.apply(.snapshot(Snapshot(providers: [ProviderView(provider: id, status: .ready, organizations: [org], standalone: Scope())], epoch: "epoch", sequence: 0)))
+        let visited = ChannelKey(provider: "discord", channel: ChannelRef(organization: "org", channel: "visited"))
+        store.visible = visited
+        var first = message("1", at: 1); first.channel = visited.channel
+        store.apply(.update(.message(provider: id, event: .received(first)), epoch: "epoch", sequence: 1))
+        let busy = ChannelKey(provider: "discord", channel: ChannelRef(organization: "org", channel: "busy"))
+        var next = message("2", at: 2); next.channel = busy.channel
+        store.apply(.update(.message(provider: id, event: .received(next)), epoch: "epoch", sequence: 2))
+        #expect(store.recentKeys == [visited], "traffic in unopened server channels must not change Recent")
+        #expect(store.activity[busy]?.unread == 1)
+    }
+
+    @MainActor @Test func reopeningLoadedChatUsesCachedMessages() async {
+        let store = QmsgStore(accounts: MemoryAccountStore())
+        let key = ChannelKey(provider: "discord", channel: ChannelRef(organization: nil, channel: "c"))
+        let conversation = store.conversation(key)
+        conversation.replace(with: HistoryPage(messages: [message("1", at: 1)], nextCursor: nil))
+        await store.loadIfNeeded(key)
+        #expect(conversation.loadError == nil, "a loaded chat should open without a new network request")
+        #expect(conversation.messages.count == 1)
+    }
+
+    @Test func pickedMentionsKeepNamesAndAddressesIntact() {
+        let picks = ["@Ana": "<@123>", "@Bo Smith": "<@456>"]
+        #expect(Mention.encodePicked("Hello @Ana, and @Bo Smith!", replacements: picks) == "Hello <@123>, and <@456>!")
+        #expect(Mention.encodePicked("@Anabelle and mail@Ana", replacements: picks) == "@Anabelle and mail@Ana")
+        #expect(Mention.encodePicked("@Ana @Ana", replacements: picks) == "<@123> <@123>")
+        let scope = Scope(users: ["123": User(id: "123", name: "Ana", username: "ana.dev")])
+        #expect(scope.userName("123") == "Ana")
+        #expect(scope.userName("999") == "Unknown user")
+    }
+
     @Test func commandsEncodeAsSerdeExpects() throws {
         let channel = ChannelRef(organization: nil, channel: "3100")
         #expect(try QmsgJSON.encode(Command.history(channel: channel, cursor: nil, limit: 50))

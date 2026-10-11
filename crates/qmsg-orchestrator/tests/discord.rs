@@ -948,6 +948,102 @@ async fn queued_send_cancellation_reports_not_sent_without_submission() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn picked_user_mentions_reach_the_platform() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let orchestrator = orchestrator(dir.path()).await;
+    let (provider, mut events) = signed_in(&fake, &orchestrator).await;
+    provider
+        .send_message(
+            general(),
+            None,
+            text("Hello <@1002>"),
+            Some("mention-test".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fake.stat("user_mentions").await,
+        1,
+        "the REST body must allow the picked user mention"
+    );
+    let MessageEvent::Received(message) = message_event(&mut events).await else {
+        panic!("expected the sent mention");
+    };
+    assert_eq!(message.content, text("Hello <@1002>"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_reports_authors_missing_from_the_initial_member_list() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let orchestrator = orchestrator(dir.path()).await;
+    let (provider, mut events) = signed_in(&fake, &orchestrator).await;
+    fake.control("/history-author").await;
+    let page = provider.history(general(), None, 3).await.unwrap();
+    assert_eq!(page.messages[0].author, "1009");
+    let event = timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("history never reported its author name")
+        .unwrap();
+    match event {
+        ProviderEvent::Directory {
+            update: DirectoryUpdate::UserUpserted { organization, user },
+            ..
+        } => {
+            assert_eq!(organization, general().organization);
+            assert_eq!(user.id, "1009");
+            assert_eq!(user.name, "History-user");
+        }
+        event => panic!("expected author profile, got {event:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_message_body_is_definitely_not_sent() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let orchestrator = orchestrator(dir.path()).await;
+    let (provider, mut events) = signed_in(&fake, &orchestrator).await;
+    let nonce = "12345678-1234-1234-1234-123456789012";
+    let error = provider
+        .send_message(general(), None, text("rejected"), Some(nonce.into()))
+        .await
+        .unwrap_err();
+    let RequestError::Failed(CommandError::Provider {
+        details: Some(details),
+        ..
+    }) = error
+    else {
+        panic!("expected a body rejection: {error:?}");
+    };
+    let Value::Record(details) = *details else {
+        panic!("expected rejection details");
+    };
+    assert_eq!(
+        details.get("delivery_unknown"),
+        Some(&Value::Boolean(false))
+    );
+    match message_event(&mut events).await {
+        MessageEvent::NotSent {
+            nonce: rejected, ..
+        } => assert_eq!(rejected, nonce),
+        event => panic!("expected NotSent, got {event:?}"),
+    }
+    assert_eq!(fake.stat("accepted").await, 0);
+    provider
+        .send_message(
+            general(),
+            None,
+            text("accepted"),
+            Some("short-nonce".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fake.stat("accepted").await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn streams_attachment_from_host_blob_and_keeps_display_metadata() {
     let fake = Fake::start();
     let dir = tempfile::tempdir().unwrap();

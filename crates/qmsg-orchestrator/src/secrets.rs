@@ -184,6 +184,15 @@ impl Secrets {
         .map_err(|e| format!("writing secret: {e}"))
     }
 
+    pub(crate) fn clear(&self, provider: &str) -> Result<(), String> {
+        self.db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM secrets WHERE provider = ?1", params![provider])
+            .map(|_| ())
+            .map_err(|e| format!("removing account secrets: {e}"))
+    }
+
     pub(crate) fn delete(&self, provider: &str, key: &str) -> Result<(), String> {
         self.db
             .lock()

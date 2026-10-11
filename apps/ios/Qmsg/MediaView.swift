@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import QuickLook
+// The Linux toolchain needs the SwiftUI overlay imported explicitly.
+import _QuickLook_SwiftUI
 import QmsgKit
 
 struct MediaView: View {
@@ -13,27 +15,49 @@ struct MediaView: View {
     @State private var preview: URL?
     @State private var revealed = false
 
+    private var isImage: Bool { media.mime?.hasPrefix("image/") == true }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if media.metadata.spoiler && !revealed {
-                Button("Show spoiler") { revealed = true }
-            } else {
-                if let data, media.mime?.hasPrefix("image/") == true, let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .accessibilityLabel(media.metadata.description ?? media.name ?? "Image")
+                Button { revealed = true } label: {
+                    Label("Spoiler — tap to show", systemImage: "eye.slash")
+                        .font(.footnote).padding(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                }.buttonStyle(.plain)
+            } else if let data, isImage, let image = UIImage(data: data) {
+                Button { Task { await open() } } label: {
+                    Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: 260, maxHeight: 280)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                Button {
-                    Task { await load() }
-                } label: {
-                    Label(media.name ?? "Attachment", systemImage: "doc")
-                }.disabled(loading)
-                if loading { ProgressView() }
-                if let file { ShareLink(item: file) }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                .buttonStyle(.plain)
+                .accessibilityLabel(media.metadata.description ?? media.name ?? "Image")
+            } else {
+                Button { Task { await open() } } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: isImage ? "photo" : "doc.fill").font(.title3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(media.name ?? "Attachment").lineLimit(1)
+                            if let size = media.size {
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)).font(.caption2).opacity(0.7)
+                            }
+                        }
+                        if loading { ProgressView().controlSize(.small) }
+                    }
+                    .padding(10)
+                    .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(loading)
             }
+            if let file, !isImage { ShareLink(item: file).font(.caption) }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .quickLookPreview($preview)
+        .task {
+            // Small images show inline without a tap.
+            if isImage, data == nil, !media.metadata.spoiler, (media.size ?? 0) <= 8_000_000 { await fetch() }
+        }
         .onDisappear {
             if let file { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
             file = nil
@@ -41,8 +65,12 @@ struct MediaView: View {
         }
     }
 
-    private func load() async {
-        if let file { preview = file; return }
+    private func open() async {
+        if file == nil { await fetch() }
+        preview = file
+    }
+
+    private func fetch() async {
         loading = true
         error = nil
         defer { loading = false }
@@ -56,7 +84,6 @@ struct MediaView: View {
             let url = directory.appendingPathComponent(safeName.isEmpty || safeName == "." || safeName == ".." ? "attachment" : safeName)
             try bytes.write(to: url, options: .atomic)
             file = url
-            preview = url
         } catch { self.error = QmsgStore.describe(error) }
     }
 }

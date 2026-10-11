@@ -3,3 +3,7 @@ QmsgKit/.build/
 QmsgKit/.swiftpm/
 DerivedData/
 *.xcuserstate
+.build/
+.swiftpm/
+xtool/
+.bsp/

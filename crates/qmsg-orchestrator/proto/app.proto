@@ -8,6 +8,9 @@ service App {
   rpc Rotate(RotateRequest) returns (Credential);
   rpc Devices(Empty) returns (DeviceList);
   rpc Revoke(RevokeRequest) returns (Empty);
+  rpc ProviderCatalog(Empty) returns (Data);
+  rpc ConfigureProvider(ProviderConfiguration) returns (Empty);
+  rpc RemoveProvider(ProviderName) returns (Empty);
   rpc Snapshot(Empty) returns (Data);
   rpc Watch(WatchRequest) returns (stream Event);
   rpc Execute(ExecuteRequest) returns (Outcome);
@@ -56,3 +59,6 @@ message UploadChunk {
 message ReadBlobRequest { string id = 1; uint64 offset = 2; uint32 length = 3; }
 message BlobChunk { bytes data = 1; }
 message ReleaseBlobRequest { string id = 1; }
+
+message ProviderConfiguration { string name = 1; string type = 2; string label = 3; bool enabled = 4; string settings_json = 5; }
+message ProviderName { string name = 1; }

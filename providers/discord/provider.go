@@ -332,7 +332,7 @@ func (p *provider) organization(st *ningen.State, g discord.Guild) qmsg.Organiza
 	known := map[discord.UserID]bool{}
 	if members, err := st.Cabinet.Members(g.ID); err == nil {
 		for _, m := range members {
-			known[m.User.ID] = true
+			known[m.User.ID] = m.User.Username != "" || m.User.DisplayName != "" || m.Nick != ""
 			o.Users = append(o.Users, memberProfile(g.ID, m))
 		}
 	}
@@ -358,6 +358,14 @@ func (p *provider) organization(st *ningen.State, g discord.Guild) qmsg.Organiza
 
 // knowUser reports u in org once, before a message refers to it.
 func (p *provider) knowUser(org *string, u discord.User) {
+	p.knowProfile(org, profile(u))
+}
+
+func (p *provider) knowProfile(org *string, u qmsg.User) {
+	// Ready can contain ID-only users. Wait for a real profile before marking them known.
+	if u.Name == "" || (u.Name == u.ID && (u.Username == nil || *u.Username == "")) {
+		return
+	}
 	key := ""
 	if org != nil {
 		key = *org
@@ -368,16 +376,38 @@ func (p *provider) knowUser(org *string, u discord.User) {
 		known = map[discord.UserID]bool{}
 		p.users[key] = known
 	}
-	seen := known[u.ID]
-	known[u.ID] = true
+	id, err := discord.ParseSnowflake(u.ID)
+	if err != nil {
+		p.mu.Unlock()
+		return
+	}
+	seen := known[discord.UserID(id)]
+	known[discord.UserID(id)] = true
 	p.mu.Unlock()
 	if !seen {
-		p.cx.Directory(qmsg.UserUpserted{Organization: org, User: profile(u)})
+		p.cx.Directory(qmsg.UserUpserted{Organization: org, User: u})
 	}
 }
 
-// can reports whether the account has perm in ch. Direct messages allow
-// everything.
+// REST history and message replies carry profiles for users absent from Ready.
+func (p *provider) knowMessageUsers(m discord.Message) {
+	org := orgOf(m.GuildID)
+	p.knowUser(org, m.Author)
+	for _, mention := range m.Mentions {
+		if org != nil && mention.Member != nil {
+			member := *mention.Member
+			member.User = mention.User
+			p.knowProfile(org, memberProfile(m.GuildID, member))
+		} else {
+			p.knowUser(org, mention.User)
+		}
+	}
+	if m.ReferencedMessage != nil {
+		p.knowUser(org, m.ReferencedMessage.Author)
+	}
+}
+
+// can reports whether the account has perm in ch. Direct messages allow everything.
 func (p *provider) can(st *ningen.State, ch discord.Channel, perm discord.Permissions) bool {
 	if !ch.GuildID.IsValid() {
 		return true
@@ -490,7 +520,7 @@ func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
 		if !live() {
 			return
 		}
-		p.knowUser(orgOf(ev.GuildID), ev.Author)
+		p.knowMessageUsers(ev.Message)
 		p.emit(qmsg.Received{Message: message(ev.Message)})
 	})
 	st.AddHandler(func(ev *gateway.MessageUpdateEvent) {
@@ -629,7 +659,11 @@ func commandError(err error, unknown qmsg.CommandError) qmsg.CommandError {
 		case http.StatusTooManyRequests:
 			return qmsg.ErrRateLimited{}
 		}
-		return qmsg.ErrProvider{Code: fmt.Sprintf("discord_%d", h.Code), Message: h.Message, Details: qmsg.Integer(h.Status)}
+		details := qmsg.Value(qmsg.Integer(h.Status))
+		if h.Status >= 400 && h.Status < 500 && h.Status != http.StatusRequestTimeout {
+			details = qmsg.Record{"status": qmsg.Integer(h.Status), "delivery_unknown": qmsg.Boolean(false)}
+		}
+		return qmsg.ErrProvider{Code: fmt.Sprintf("discord_%d", h.Code), Message: h.Message, Details: details}
 	}
 	return qmsg.ErrFailed{Reason: err.Error()}
 }

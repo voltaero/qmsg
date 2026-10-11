@@ -139,6 +139,15 @@ public struct ChannelNode: Identifiable, Hashable, Sendable {
 }
 
 extension Scope {
+    /// A name suitable for chat labels, even before a profile arrives.
+    public func userName(_ id: String) -> String {
+        guard let user = users[id] else { return "Unknown user" }
+        let name = user.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty && name != id { return name }
+        if let username = user.username, !username.isEmpty { return username }
+        return "Unknown user"
+    }
+
     /// The channels of this scope as a tree: top-level channels and
     /// categories, each followed by its children.
     public func channelTree() -> [ChannelNode] {
@@ -158,7 +167,7 @@ extension Scope {
     /// conversation without one, its other members.
     public func title(of channel: Channel) -> String {
         if !channel.name.isEmpty { return channel.name }
-        let others = (channel.members ?? []).filter { $0 != me }.map { users[$0]?.name ?? $0 }
+        let others = (channel.members ?? []).filter { $0 != me }.map { userName($0) }
         return others.isEmpty ? channel.id : others.joined(separator: ", ")
     }
 }

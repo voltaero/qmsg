@@ -1,8 +1,7 @@
 use anyhow::Context as _;
 use qmsg_orchestrator::{BrowserConfig, Encryption, Orchestrator, ProviderSpec, app};
 use serde::Deserialize;
-use std::{path::PathBuf, sync::Arc};
-use tokio::sync::mpsc;
+use std::path::PathBuf;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -73,20 +72,7 @@ async fn main() -> anyhow::Result<()> {
     config.app.validate()?;
     let mut orchestrator = Orchestrator::new(&data_dir, Encryption::Keychain).await?;
     orchestrator.set_browser(config.browser);
-    let (tx, events) = mpsc::channel(256);
-    let mut providers = Vec::new();
-    for spec in config.providers {
-        let mut p = orchestrator.spawn(spec, tx.clone())?;
-        p.set_timeout(None);
-        providers.push(Arc::new(p));
-    }
-    drop(tx);
-    let service = app::Service::new(&data_dir, providers.clone(), events)?;
+    let service = app::Service::managed(&data_dir, orchestrator, config.providers).await?;
     tokio::select! {result=service.serve(config.app)=>result?,_ = tokio::signal::ctrl_c()=>{tracing::info!("shutting down");}}
-    for provider in providers {
-        let _ = provider.shutdown();
-    }
-    // Provider shutdown is bounded by the host's own runtime limits.
-    drop(orchestrator);
     Ok(())
 }

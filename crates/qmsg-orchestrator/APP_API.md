@@ -81,6 +81,31 @@ Streams check token validity before yielding each event and at least every
 15 seconds while the client reads. Expiry, rotation or revocation ends the
 stream with `UNAUTHENTICATED`; reconnect using a valid token.
 
+## Chat accounts
+
+`ProviderCatalog` returns JSON with `types` and `accounts`. Each installed type
+has an `id`, `label`, connection `fields` and `defaults`. A field has `id`,
+`label`, `required` and `secret`. Accounts have a stable `name`, an editable
+`label`, a `type`, `enabled` and a string map of public `settings`.
+
+`ConfigureProvider` adds or updates an account. Pass those fields and encode
+the settings map in `settings_json`. An empty label keeps the old label.
+The server accepts only installed types and their listed connection fields;
+provider sign-in stays in the existing function and login-step flow. It never
+returns saved tokens in the catalog. Turning an account off stops its provider
+and keeps its saved sign-in. Turning it on starts a new runtime instance.
+
+`RemoveProvider(name)` stops the account and deletes its saved sign-in on this
+server. It does not delete the account or messages on the chat network.
+These RPCs require a paired device token. The CLI enables account management;
+embedded servers created with `Service::new` return `UNIMPLEMENTED` for it.
+
+The config's provider entries supply installed components and initial accounts.
+After the first change, `<data_dir>/providers.json` holds the account list and
+overrides those initial accounts on restart. WASM paths remain server settings.
+Adding, restarting or removing an active account sends a fresh `Watch` snapshot;
+a resumed cursor that predates such a change also gets a snapshot.
+
 ## State and reconnects
 
 Call `Watch` with an empty epoch to start. The first event is a full directory

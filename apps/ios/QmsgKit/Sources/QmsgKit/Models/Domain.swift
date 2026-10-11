@@ -539,3 +539,20 @@ public struct Reaction: Codable, Hashable, Sendable {
     public var count: UInt32
     public var me: Bool
 }
+
+extension Mention {
+    /// Converts names picked in the composer to their network mention tokens.
+    public static func encodePicked(_ text: String, replacements: [String: String]) -> String {
+        let names = replacements.keys.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        guard !names.isEmpty else { return text }
+        let alternatives = names.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        let pattern = "(?<![\\p{L}\\p{N}_])(?:\(alternatives))(?![\\p{L}\\p{N}_])"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let result = NSMutableString(string: text)
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            let shown = (text as NSString).substring(with: match.range)
+            if let replacement = replacements[shown] { result.replaceCharacters(in: match.range, with: replacement) }
+        }
+        return result as String
+    }
+}

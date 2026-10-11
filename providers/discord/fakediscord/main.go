@@ -67,6 +67,7 @@ type msg struct {
 	Edited      *string          `json:"edited_timestamp"`
 	Type        int              `json:"type"`
 	Nonce       string           `json:"nonce,omitempty"`
+	Mentions    []map[string]any `json:"mentions,omitempty"`
 	Attachments []map[string]any `json:"attachments,omitempty"`
 }
 
@@ -331,8 +332,11 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 			}
 
 			var body struct {
-				Content string `json:"content"`
-				Nonce   string `json:"nonce"`
+				Content         string `json:"content"`
+				Nonce           string `json:"nonce"`
+				AllowedMentions struct {
+					Parse []string `json:"parse"`
+				} `json:"allowed_mentions"`
 			}
 			var attachments []map[string]any
 			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
@@ -369,8 +373,21 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 				reply(w, 400, apiError{"bad JSON", 0})
 				return
 			}
+			if len(body.Nonce) > 25 {
+				reply(w, 400, apiError{"Invalid Form Body", 50035})
+				return
+			}
 			m := &msg{ID: s.id(), ChannelID: ch, GuildID: guildOf(ch), Author: user(meID, "tester"), Content: body.Content, Timestamp: now(), Nonce: body.Nonce, Attachments: attachments}
 
+			if strings.Contains(body.Content, "<@"+friendID+">") {
+				for _, kind := range body.AllowedMentions.Parse {
+					if kind == "users" {
+						m.Mentions = []map[string]any{user(friendID, "friend")}
+						s.stats["user_mentions"]++
+						break
+					}
+				}
+			}
 			s.messages[ch] = append(s.messages[ch], m)
 			s.stats["accepted"]++
 			s.dispatchLater("MESSAGE_CREATE", m)
@@ -441,6 +458,13 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 // control lets the test act as Discord and the other users.
 func (s *server) control(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/history-author":
+		s.mu.Lock()
+		for _, message := range s.messages[general] {
+			message.Author = user("1009", "history-user")
+		}
+		s.mu.Unlock()
+		reply(w, 204, nil)
 	case "/message":
 		// A message from the friend in channel ?channel=.
 		ch := r.URL.Query().Get("channel")

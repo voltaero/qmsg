@@ -1,17 +1,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 import QmsgKit
 
 struct ChatView: View {
     @Environment(QmsgStore.self) private var store
+    @Environment(AccountsModel.self) private var accounts
     let key: ChannelKey
     @State private var text = ""
     @State private var attachments: [QmsgStore.Attachment] = []
     @State private var reply: Message?
     @State private var importing = false
     @State private var actionMessage: Message?
-    @State private var channelActions = false
+    @State private var tool: MessageTool = .react
+    @State private var deleting: Message?
     @State private var error: String?
+    /// Whether the newest message is on screen; only then do new messages scroll.
+    @State private var atBottom = true
+    /// Mentions picked in the composer: what's shown ("@Ana") to what's sent ("<@123>").
+    @State private var mentions: [String: String] = [:]
 
     private var scope: Scope? { store.providers[key.provider]?.scope(key.channel.organization) }
     private var channel: Channel? { scope?.channels[key.channel.channel] }
@@ -20,81 +27,139 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if store.link != .live { ConnectionLabel(link: store.link) }
+                LazyVStack(alignment: .leading, spacing: 2) {
                     if let error = conversation.loadError {
-                        Text(error).foregroundStyle(.red)
-                        Button("Try again") { Task { await store.loadLatest(key) } }
+                        NoticeCard(symbol: "exclamationmark.triangle.fill", tint: .orange, title: "Couldn't load messages", detail: error) {
+                            Button("Try again") { Task { await store.loadLatest(key) } }
+                        }
                     }
-                    if conversation.isLoading { ProgressView().frame(maxWidth: .infinity) }
+                    if conversation.isLoading && conversation.messages.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
+                    }
                     if !conversation.reachedStart && conversation.olderCursor != nil {
-                        Button("Load older messages") { Task { await store.loadOlder(key) } }
-                            .disabled(conversation.isLoadingOlder)
-                    }
-                    if conversation.loaded && conversation.messages.isEmpty {
-                        ContentUnavailableView("No messages yet", systemImage: "bubble.left", description: Text("Start the conversation below."))
-                    }
-                    ForEach(conversation.messages) { message in
-                        MessageRow(message: message, scope: scope)
-                            .id(message.id)
-                            .contextMenu {
-                                Button("Reply", systemImage: "arrowshape.turn.up.left") { reply = message }
-                                Button("Actions", systemImage: "ellipsis") { actionMessage = message }
+                        Button {
+                            let anchor = conversation.messages.first?.id
+                            Task {
+                                await store.loadOlder(key)
+                                // Keep the reader where they were, not at the new top.
+                                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
                             }
+                        } label: {
+                            if conversation.isLoadingOlder { ProgressView() } else { Text("Load earlier messages") }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .frame(maxWidth: .infinity).padding(.vertical, 8)
+                        .disabled(conversation.isLoadingOlder)
+                    }
+                    if conversation.loaded && conversation.messages.isEmpty && conversation.pending.isEmpty {
+                        ContentUnavailableView("No messages yet", systemImage: "bubble.left", description: Text("Say hello below."))
+                    }
+                    let messages = conversation.messages
+                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                        let previous = index > 0 ? messages[index - 1] : nil
+                        if previous.map({ !Calendar.current.isDate($0.date, inSameDayAs: message.date) }) ?? true {
+                            DaySeparator(date: message.date)
+                        }
+                        MessageRow(
+                            message: message, scope: scope, feed: isFeed,
+                            reply: message.replyTo.flatMap { conversation.message($0) },
+                            showsAuthor: startsGroup(message, after: previous),
+                            react: { reaction in Task { await toggle(reaction, on: message) } }
+                        )
+                        .id(message.id)
+                        .contextMenu { menu(for: message) }
                     }
                     ForEach(conversation.pending) { pending in
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(pending.content.enumerated()), id: \.offset) { _, part in
-                                Text(part.text ?? part.media?.name ?? "Attachment")
-                            }
-                            switch pending.state {
-                            case .sending: Label("Sending…", systemImage: "clock").foregroundStyle(.secondary)
-                            case .failed(let reason):
-                                Text(reason).foregroundStyle(.red)
-                                Button("Retry") { store.retry(pending, in: key) }
-                                Button("Remove") { store.discard(pending, in: key) }
-                            case .unknown(let reason):
-                                Text("Delivery unknown. \(reason) Check the chat before sending again.").foregroundStyle(.orange)
-                                Button("Reload chat") { Task { await store.loadLatest(key) } }
-                                Button("Remove") { store.discard(pending, in: key) }
-                            }
-                        }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        PendingRow(
+                            pending: pending, scope: scope,
+                            retry: { store.retry(pending, in: key) },
+                            reload: { Task { await store.loadLatest(key) } },
+                            remove: { store.discard(pending, in: key) }
+                        )
                     }
                     TimelineView(.periodic(from: .now, by: 2)) { _ in
-                        let names = conversation.typingUsers.map { scope?.users[$0]?.name ?? $0 }
-                        if !names.isEmpty { Text("\(names.joined(separator: ", ")) typing…").font(.caption).foregroundStyle(.secondary) }
+                        let names = conversation.typingUsers.map { scope?.userName($0) ?? "Someone" }
+                        if !names.isEmpty {
+                            Label("\(names.joined(separator: ", ")) \(names.count == 1 ? "is" : "are") typing…", systemImage: "ellipsis.bubble")
+                                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                        }
                     }
                     Color.clear.frame(height: 1).id("bottom")
-                }.padding()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
             }
-            .defaultScrollAnchor(.bottom)
-            .onChange(of: conversation.messages.last?.id) { _, _ in
-                proxy.scrollTo("bottom", anchor: .bottom)
-                Task { await store.markRead(key) }
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .scrollDismissesKeyboard(.interactively)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+            } action: { _, bottom in
+                atBottom = bottom
             }
-            .onChange(of: conversation.pending.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.messages.last?.id) { old, _ in
+                // The first load is marked read by the entry task.
+                guard old != nil else { return }
+                // Follow new messages only if the reader is already at the end,
+                // or the message is their own.
+                if atBottom || conversation.messages.last?.author == scope?.me {
+                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                if atBottom { Task { await store.markRead(key) } }
+            }
+            .onChange(of: conversation.pending.count) { old, new in
+                if new > old { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !atBottom {
+                    Button("Jump to latest", systemImage: "chevron.down") {
+                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
+                    .labelStyle(.iconOnly).font(.callout.bold())
+                    .frame(width: 44, height: 44)
+                    .chatGlass(in: Circle(), interactive: true)
+                    .padding(12)
+                }
+            }
             .refreshable { await store.loadLatest(key) }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ConnectionBanner(link: store.link) { store.resume() }
         }
         .navigationTitle(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { Button("Channel actions", systemImage: "ellipsis.circle") { channelActions = true } }
-        .safeAreaInset(edge: .bottom) {
-            if channel?.isWritable == true { composer }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 0) {
+                    Text(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel).font(.headline).lineLimit(1)
+                    Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if channel?.isWritable == true {
+                composer
+            } else if channel != nil {
+                Text("You can't send messages here.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(12).background(.bar)
+            }
         }
         .task {
             store.visible = key
-            await store.loadLatest(key)
+            await store.loadIfNeeded(key)
             await store.markRead(key)
         }
+        .toolbar(.hidden, for: .tabBar)
         .onDisappear { if store.visible == key { store.visible = nil } }
         .sheet(item: $actionMessage) { message in
             NavigationStack {
-                ActionsView(provider: key.provider, context: .message(channel: key.channel, id: message.id), initialContent: message.content)
+                MessageToolsView(key: key, message: message, tool: tool)
             }
+            .presentationDetents(tool == .react ? [.medium] : [.medium, .large])
         }
-        .sheet(isPresented: $channelActions) {
-            NavigationStack { ActionsView(provider: key.provider, context: .channel(key.channel)) }
+        .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            if let message = deleting {
+                Button("Delete for everyone", role: .destructive) { Task { await delete(message) } }
+            }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             do {
@@ -112,37 +177,200 @@ struct ChatView: View {
         }
     }
 
+    private var subtitle: String {
+        let account = accounts.label(for: key.provider)
+        if let organization = key.channel.organization, let name = store.providers[key.provider]?.organizations[organization]?.name {
+            return "\(name) · \(account)"
+        }
+        return account
+    }
+
+    /// Server channels read like a feed; direct chats use bubbles.
+    private var isFeed: Bool { key.channel.organization != nil }
+
+    /// A new author, or a pause of more than five minutes, starts a new group.
+    private func startsGroup(_ message: Message, after previous: Message?) -> Bool {
+        guard let previous else { return true }
+        return previous.author != message.author || message.date.timeIntervalSince(previous.date) > 300
+            || message.replyTo != nil
+    }
+
+    @ViewBuilder
+    private func menu(for message: Message) -> some View {
+        Button("Reply", systemImage: "arrowshape.turn.up.left") { reply = message }
+        Button("React", systemImage: "face.smiling") { tool = .react; actionMessage = message }
+        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.content.compactMap(\.text).joined(separator: "\n") }
+        if message.author == scope?.me {
+            Button("Edit", systemImage: "pencil") { tool = .edit; actionMessage = message }
+            Divider()
+            Button("Delete", systemImage: "trash", role: .destructive) { deleting = message }
+        }
+    }
+
+    @ViewBuilder
     private var composer: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 4) { composerContent }
+        } else {
+            composerContent
+        }
+    }
+
+    private var composerContent: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let error {
+                ErrorNote(message: error) { self.error = nil }
+            }
             if let reply {
-                HStack {
-                    Text("Reply to \(scope?.users[reply.author]?.name ?? reply.author)").font(.caption)
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 2).fill(.tint).frame(width: 3)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Replying to \(scope?.userName(reply.author) ?? "message")").font(.caption.bold()).foregroundStyle(.tint)
+                        Text(reply.preview(in: scope)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Spacer()
-                    Button("Cancel reply", systemImage: "xmark") { self.reply = nil }.labelStyle(.iconOnly)
+                    Button("Cancel reply", systemImage: "xmark.circle.fill") { self.reply = nil }
+                        .labelStyle(.iconOnly).foregroundStyle(.secondary)
+                }.frame(height: 34)
+            }
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(attachments.indices, id: \.self) { index in
+                            HStack(spacing: 6) {
+                                Image(systemName: attachments[index].mime.hasPrefix("image/") ? "photo" : "doc")
+                                Text(attachments[index].name).lineLimit(1).frame(maxWidth: 140)
+                                Button("Remove attachment", systemImage: "xmark.circle.fill") { attachments.remove(at: index) }
+                                    .labelStyle(.iconOnly).foregroundStyle(.secondary)
+                            }
+                            .font(.caption).padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(.quaternary, in: Capsule())
+                        }
+                    }
                 }
             }
-            ForEach(attachments.indices, id: \.self) { index in
-                HStack {
-                    Label(attachments[index].name, systemImage: "paperclip").font(.caption).lineLimit(1)
-                    Spacer()
-                    Button("Remove attachment", systemImage: "xmark") { attachments.remove(at: index) }.labelStyle(.iconOnly)
-                }
+            if mentionQuery != nil, !mentionCandidates.isEmpty {
+                mentionPicker
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            HStack(alignment: .bottom) {
-                Button("Attach file", systemImage: "plus") { importing = true }.labelStyle(.iconOnly)
+            HStack(alignment: .bottom, spacing: 8) {
+                Button("Attach file", systemImage: "plus") { importing = true }
+                    .labelStyle(.iconOnly).font(.title3.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: 44, height: 44)
+                    .chatGlass(in: Circle(), interactive: true)
                 TextField("Message", text: $text, axis: .vertical).lineLimit(1...6)
-                    .padding(10).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
-                Button("Send", systemImage: "arrow.up.circle.fill") { send() }
-                    .font(.title2).labelStyle(.iconOnly)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .chatGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                Button("Send", systemImage: "arrow.up") { send() }
+                    .labelStyle(.iconOnly).font(.body.bold())
+                    .foregroundStyle(canSend ? Color.white : Color.secondary)
+                    .frame(width: 44, height: 44)
+                    .chatGlass(in: Circle(), tint: canSend ? .accentColor : nil, interactive: true)
+                    .disabled(!canSend)
             }
-        }.padding().background(.bar)
+        }
+        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6)
+    }
+
+    // MARK: Mentions
+
+    /// How this network writes a mention, or nil when the app doesn't know.
+    private var mentionStyle: ((User) -> (shown: String, sent: String))? {
+        let type = accounts.type(for: key.provider) ?? key.provider
+        if type == "discord" { return { ("@" + $0.name, "<@\($0.id)>") } }
+        if type == "echo" { return { ("@" + $0.name, "@" + $0.name) } }
+        return nil
+    }
+
+    /// The word being typed after an "@", if any.
+    private var mentionQuery: String? {
+        guard mentionStyle != nil, let at = text.lastIndex(of: "@") else { return nil }
+        if at != text.startIndex, !text[text.index(before: at)].isWhitespace { return nil }
+        let query = text[text.index(after: at)...]
+        guard !query.contains(where: \.isNewline), query.count <= 32 else { return nil }
+        return String(query)
+    }
+
+    private var mentionCandidates: [User] {
+        guard let query = mentionQuery?.lowercased(), let scope else { return [] }
+        let members = channel?.members ?? []
+        let pool = members.isEmpty ? Array(scope.users.values) : members.compactMap { scope.users[$0] }
+        return pool
+            .filter { $0.id != scope.me && !$0.name.isEmpty && $0.name != $0.id }
+            .filter { query.isEmpty || $0.name.lowercased().contains(query) || ($0.username?.lowercased().contains(query) ?? false) }
+            .sorted { a, b in
+                let ap = a.name.lowercased().hasPrefix(query), bp = b.name.lowercased().hasPrefix(query)
+                return ap != bp ? ap : a.name.localizedLowercase < b.name.localizedLowercase
+            }
+            .prefix(6).map { $0 }
+    }
+
+    private var mentionPicker: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(mentionCandidates) { user in
+                Button { insertMention(user) } label: {
+                    HStack(spacing: 10) {
+                        InitialsAvatar(name: user.name, size: 32)
+                        Text(user.name).font(.subheadline)
+                        if let username = user.username, username != user.name {
+                            Text(username).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .foregroundStyle(.primary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 6)
+        .chatGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private func insertMention(_ user: User) {
+        guard let style = mentionStyle, let at = text.lastIndex(of: "@") else { return }
+        var mention = style(user)
+        if scope?.users.values.filter({ $0.name.caseInsensitiveCompare(user.name) == .orderedSame }).count ?? 0 > 1 {
+            mention.shown += " (" + (user.username ?? String(user.id.suffix(4))) + ")"
+        }
+        text = String(text[..<at]) + mention.shown + " "
+        mentions[mention.shown] = mention.sent
+    }
+
+    /// The text as the network expects it, with picked mentions swapped in.
+    private func wireText(_ text: String) -> String {
+        Mention.encodePicked(text, replacements: mentions)
+    }
+
+    private var canSend: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
+
+    private func toggle(_ reaction: Reaction, on message: Message) async {
+        do {
+            let context = FunctionContext.message(channel: key.channel, id: message.id)
+            let action: ActionKind = reaction.me ? .removeReaction : .addReaction
+            guard let function = try await store.functions(context, provider: key.provider).first(where: { $0.action == action }) else {
+                throw StoreError.unsupported("This reaction cannot be changed.")
+            }
+            _ = try await store.call(function, context: context, arguments: [StandardInput.reaction: .text(reaction.key)], provider: key.provider).get()
+        } catch { self.error = QmsgStore.describe(error) }
+    }
+
+    private func delete(_ message: Message) async {
+        do {
+            let context = FunctionContext.message(channel: key.channel, id: message.id)
+            guard let function = try await store.functions(context, provider: key.provider).first(where: { $0.action == .deleteMessage }) else {
+                throw StoreError.unsupported("This message cannot be deleted.")
+            }
+            _ = try await store.call(function, context: context, arguments: [:], provider: key.provider).get()
+        } catch { self.error = QmsgStore.describe(error) }
     }
 
     private func send() {
         guard let channel else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = wireText(text.trimmingCharacters(in: .whitespacesAndNewlines))
         if !trimmed.isEmpty {
             guard let rule = channel.rule(for: .text) else { error = "This channel doesn't take plain text."; return }
             if let limit = rule.maxSize, UInt64(rule.textUnit.measure(trimmed)) > limit { error = "The message is too long."; return }
@@ -164,34 +392,220 @@ struct ChatView: View {
         if let max = channel.limits.maxTotalSize, total > max { error = "The message and files are too large."; return }
         store.send(text: trimmed, attachments: attachments, replyTo: reply?.id, to: key)
         text = ""
+        mentions = [:]
         attachments = []
         reply = nil
         error = nil
     }
 }
 
+private struct DaySeparator: View {
+    let date: Date
+    var body: some View {
+        Text(Calendar.current.isDateInToday(date) ? "Today" : Calendar.current.isDateInYesterday(date) ? "Yesterday" : date.formatted(date: .abbreviated, time: .omitted))
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(.quaternary, in: Capsule())
+            .frame(maxWidth: .infinity).padding(.vertical, 10)
+    }
+}
+
+/// A card for problems that need a button, like a failed load.
+private struct NoticeCard<Actions: View>: View {
+    let symbol: String
+    let tint: Color
+    let title: String
+    let detail: String?
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol).font(.subheadline.weight(.semibold)).foregroundStyle(tint)
+            if let detail { Text(detail).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
+            HStack { actions() }.buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 6)
+    }
+}
+
+/// A message on its way. Failed sends can be retried; an unconfirmed one
+/// may have gone through, so it's never resent automatically.
+private struct PendingRow: View {
+    let pending: PendingSend
+    let scope: Scope?
+    let retry: () -> Void
+    let reload: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(pending.content.enumerated()), id: \.offset) { index, part in
+                    if let data = pending.previews[index], let image = UIImage(data: data) {
+                        Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else if let text = part.text {
+                        Text(Mentions.render(text, scope: scope))
+                    } else {
+                        Label(part.media?.name ?? "Attachment", systemImage: "doc")
+                    }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .foregroundStyle(.white)
+            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .opacity(pending.state == .sending ? 0.6 : 1)
+            status
+        }
+        .padding(.leading, 48).padding(.top, 6)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var bubbleColor: Color {
+        switch pending.state {
+        case .sending: .accentColor
+        case .failed: .red.opacity(0.75)
+        case .unknown: .orange.opacity(0.8)
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch pending.state {
+        case .sending:
+            Label("Sending…", systemImage: "clock").font(.caption2).foregroundStyle(.secondary)
+        case .failed(let reason):
+            VStack(alignment: .trailing, spacing: 4) {
+                Label("Not sent", systemImage: "exclamationmark.circle.fill").font(.caption.bold()).foregroundStyle(.red)
+                if !reason.isEmpty { Text(reason).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.trailing) }
+                HStack {
+                    Button("Delete", role: .destructive, action: remove)
+                    Button("Retry", action: retry).buttonStyle(.borderedProminent)
+                }.buttonStyle(.bordered).controlSize(.mini)
+            }
+        case .unknown(let reason):
+            VStack(alignment: .trailing, spacing: 4) {
+                Label("Could not confirm delivery", systemImage: "questionmark.circle.fill").font(.caption.bold()).foregroundStyle(.orange)
+                Text("It may have been sent. Reload the chat to check before sending again.")
+                    .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                if !reason.isEmpty { Text(reason).font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.trailing) }
+                HStack {
+                    Button("Dismiss", action: remove)
+                    Button("Reload chat", action: reload).buttonStyle(.borderedProminent).tint(.orange)
+                }.buttonStyle(.bordered).controlSize(.mini)
+            }
+        }
+    }
+}
+
 private struct MessageRow: View {
     let message: Message
     let scope: Scope?
+    let feed: Bool
+    let reply: Message?
+    let showsAuthor: Bool
+    let react: (Reaction) -> Void
+
+    private var mine: Bool { message.author == scope?.me }
+    private var author: String { scope?.userName(message.author) ?? "Unknown user" }
 
     var body: some View {
+        if feed { feedRow } else { bubbleRow }
+    }
+
+    /// Avatar, name and time on one line, text aligned under the name.
+    private var feedRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if showsAuthor { InitialsAvatar(name: author, size: 30, neutral: true) }
+            else { Color.clear.frame(width: 30, height: 1) }
+            VStack(alignment: .leading, spacing: 3) {
+                if showsAuthor {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(author).font(.subheadline.weight(.semibold))
+                            .foregroundStyle(mine ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                            .lineLimit(1)
+                        Text(message.date, style: .time).font(.caption2).foregroundStyle(.secondary)
+                        if message.editedAt != nil { Text("edited").font(.caption2).foregroundStyle(.tertiary) }
+                    }
+                }
+                replyQuote
+                messageContent
+                reactionsRow
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.top, showsAuthor ? 12 : 2)
+    }
+
+    private var bubbleRow: some View {
+        VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
+            if showsAuthor && !mine {
+                Text(author).font(.footnote.weight(.semibold)).padding(.leading, 4)
+            }
+            bubble
+            reactionsRow
+        }
+        .padding(mine ? .leading : .trailing, 48)
+        .padding(.top, showsAuthor ? 12 : 1)
+        .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+    }
+
+    @ViewBuilder
+    private var replyQuote: some View {
+        if message.replyTo != nil {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(reply.map { scope?.userName($0.author) ?? "Unknown user" } ?? "Earlier message").bold()
+                if let reply { Text(reply.preview(in: scope)).lineLimit(2) }
+            }
+            .font(.caption)
+            .padding(.leading, 8)
+            .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(mine && !feed ? Color.white.opacity(0.7) : Color.secondary.opacity(0.5)).frame(width: 2) }
+            .opacity(0.85)
+        }
+    }
+
+    @ViewBuilder
+    private var messageContent: some View {
+        if let email = message.email { Text(email.subject).font(.headline) }
+        ForEach(Array(message.content.enumerated()), id: \.offset) { _, content in
+            if let text = content.text { Text(Mentions.render(text, scope: scope)).textSelection(.enabled) }
+            else if let media = content.media { MediaView(media: media) }
+            else { Text("Unsupported content").font(.caption).opacity(0.7) }
+        }
+    }
+
+    @ViewBuilder
+    private var reactionsRow: some View {
+        if !message.reactions.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(message.reactions, id: \.key) { reaction in
+                    Button { react(reaction) } label: {
+                        Text("\(reaction.key) \(reaction.count)").font(.caption)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(reaction.me ? Color.accentColor.opacity(0.2) : Color(uiColor: .secondarySystemBackground), in: Capsule())
+                            .overlay(Capsule().stroke(reaction.me ? Color.accentColor : .clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var bubble: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(scope?.users[message.author]?.name ?? message.author).font(.subheadline.bold())
-                Text(message.date, style: .time).font(.caption).foregroundStyle(.secondary)
-                if message.editedAt != nil { Text("edited").font(.caption).foregroundStyle(.secondary) }
+            replyQuote
+            messageContent
+            HStack(spacing: 4) {
+                if message.editedAt != nil { Text("edited") }
+                Text(message.date, style: .time)
             }
-            if let replyTo = message.replyTo { Label("Reply to \(replyTo)", systemImage: "arrowshape.turn.up.left").font(.caption).foregroundStyle(.secondary) }
-            if let email = message.email { Text(email.subject).font(.headline) }
-            ForEach(Array(message.content.enumerated()), id: \.offset) { _, content in
-                if let text = content.text { Text(text).textSelection(.enabled) }
-                else if let media = content.media { MediaView(media: media) }
-                else { Text("Unsupported content").font(.caption).foregroundStyle(.secondary) }
-            }
-            if !message.reactions.isEmpty {
-                Text(message.reactions.map { "\($0.key) \($0.count)" }.joined(separator: "   "))
-                    .font(.caption).padding(6).background(Color.secondary.opacity(0.1), in: Capsule())
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+            .font(.caption2).opacity(0.65)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .foregroundStyle(mine ? Color.white : Color.primary)
+        .tint(mine ? Color.white : Color.accentColor)
+        .background(mine ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

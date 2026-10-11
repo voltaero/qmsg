@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"github.com/diamondburned/arikawa/v3/discord"
+	"github.com/diamondburned/arikawa/v3/utils/httputil"
 	"github.com/diamondburned/ningen/v3"
+	"net/http"
 	"testing"
 
 	qmsg "github.com/voltaero/qmsg/sdk/go"
@@ -35,5 +37,27 @@ func TestFindUsersIncludesDeduplicatedReadyUsers(t *testing.T) {
 	}
 	if issue := p.verifyUser(st, "1002"); issue != nil {
 		t.Fatalf("verification: %+v", issue)
+	}
+}
+
+func TestInvalidBodyIsDefinitelyNotSent(t *testing.T) {
+	err := commandError(&httputil.HTTPError{Status: http.StatusBadRequest, Code: 50035, Message: "Invalid body"}, nil)
+	failure, ok := err.(qmsg.ErrProvider)
+	if !ok {
+		t.Fatalf("wrong error type: %T", err)
+	}
+	details, ok := failure.Details.(qmsg.Record)
+	if !ok || details["delivery_unknown"] != qmsg.Boolean(false) {
+		t.Fatalf("Discord rejected the body, but delivery is not marked as definite: %T", failure.Details)
+	}
+}
+
+func TestIDOnlyUsersAreNotMarkedKnownBeforeTheirProfileArrives(t *testing.T) {
+	p := &provider{}
+	// Ready sometimes supplies just an ID. No SDK connection exists here:
+	// publishing it as a full profile would fail and block the later real name.
+	p.knowUser(nil, discord.User{ID: 1009})
+	if p.users[""][1009] {
+		t.Fatal("an ID-only record would hide the later name")
 	}
 }

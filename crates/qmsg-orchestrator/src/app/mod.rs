@@ -2,6 +2,7 @@
 mod auth;
 mod hub;
 mod media;
+mod providers;
 pub mod wire {
     tonic::include_proto!("qmsg.app.v1");
 }
@@ -87,6 +88,7 @@ enum Cached {
 }
 #[derive(Clone)]
 pub struct Service {
+    management: Option<Arc<providers::Manager>>,
     auth: Arc<auth::Auth>,
     hub: Arc<hub::Hub>,
     data_dir: PathBuf,
@@ -97,6 +99,13 @@ pub struct Service {
     devices: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
 }
 impl Service {
+    pub async fn managed(
+        data: &Path,
+        host: crate::Orchestrator,
+        specs: Vec<crate::ProviderSpec>,
+    ) -> anyhow::Result<Self> {
+        providers::Manager::service(data, host, specs).await
+    }
     pub fn new(
         data_dir: &Path,
         providers: Vec<Arc<ProviderHandle>>,
@@ -105,6 +114,7 @@ impl Service {
         let auth = Arc::new(auth::Auth::open(data_dir)?);
         let media = Arc::new(media::Media::default());
         Ok(Self {
+            management: None,
             auth,
             hub: hub::Hub::new(providers, events, media),
             data_dir: data_dir.into(),
@@ -332,6 +342,62 @@ impl App for Service {
     ) -> Result<Response<wire::Empty>, Status> {
         self.authenticate(&request)?;
         self.auth.revoke(&request.into_inner().device_id)?;
+        Ok(Response::new(wire::Empty {}))
+    }
+    async fn provider_catalog(
+        &self,
+        request: Request<wire::Empty>,
+    ) -> Result<Response<wire::Data>, Status> {
+        let (device, _) = self.authenticate(&request)?;
+        let _slot = self.slots(&device)?;
+        let manager = self
+            .management
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("account management is not configured"))?;
+        Ok(Response::new(wire::Data {
+            json: serde_json::to_string(&manager.catalog().await)
+                .map_err(|_| Status::internal("could not read accounts"))?,
+            blob_expires_at_ms: 0,
+        }))
+    }
+    async fn configure_provider(
+        &self,
+        request: Request<wire::ProviderConfiguration>,
+    ) -> Result<Response<wire::Empty>, Status> {
+        let (device, _) = self.authenticate(&request)?;
+        let _slot = self.slots(&device)?;
+        let manager = self
+            .management
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("account management is not configured"))?;
+        let r = request.into_inner();
+        if r.settings_json.len() > 32768 {
+            return Err(Status::invalid_argument("account settings too large"));
+        }
+        let settings = serde_json::from_str(&r.settings_json)
+            .map_err(|_| Status::invalid_argument("invalid account settings"))?;
+        manager
+            .configure(providers::ManagedProvider {
+                name: r.name,
+                kind: r.r#type,
+                label: r.label,
+                enabled: r.enabled,
+                settings,
+            })
+            .await?;
+        Ok(Response::new(wire::Empty {}))
+    }
+    async fn remove_provider(
+        &self,
+        request: Request<wire::ProviderName>,
+    ) -> Result<Response<wire::Empty>, Status> {
+        let (device, _) = self.authenticate(&request)?;
+        let _slot = self.slots(&device)?;
+        let manager = self
+            .management
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("account management is not configured"))?;
+        manager.remove(&request.into_inner().name).await?;
         Ok(Response::new(wire::Empty {}))
     }
     async fn snapshot(
@@ -662,7 +728,7 @@ struct Snapshot {
     sequence: u64,
 }
 pub fn schema() -> serde_json::Value {
-    serde_json::json!({"command":schemars::schema_for!(Command),"reply":schemars::schema_for!(Reply),"error":schemars::schema_for!(Error),"snapshot":schemars::schema_for!(Snapshot),"event":schemars::schema_for!(ProviderEvent)})
+    serde_json::json!({"provider_catalog":schemars::schema_for!(providers::Catalog),"command":schemars::schema_for!(Command),"reply":schemars::schema_for!(Reply),"error":schemars::schema_for!(Error),"snapshot":schemars::schema_for!(Snapshot),"event":schemars::schema_for!(ProviderEvent)})
 }
 /// Create a local TLS identity without overwriting an existing key.
 pub fn create_identity(data_dir: &Path, hosts: Vec<String>) -> anyhow::Result<(PathBuf, PathBuf)> {

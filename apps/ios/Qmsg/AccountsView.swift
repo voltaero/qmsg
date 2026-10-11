@@ -291,14 +291,21 @@ struct AccountDetailView: View {
     @ViewBuilder
     private func signIn(_ step: LoginStep) -> some View {
         Section {
-            LoginStepView(step: step)
-            if let function = functions.first(where: { $0.id == step.function || $0.action == .login }) {
-                if function.inputs.isEmpty {
-                    Button { Task { await run(function) } } label: {
-                        HStack { Text("Sign in").bold(); Spacer(); if busy { ProgressView() } }
-                    }.disabled(busy)
-                } else {
-                    NavigationLink("Continue sign in") { SignInForm(provider: name, context: .provider, function: function) }
+            if let google = functions.first(where: { $0.label == "Sign in with Google" && $0.action == .login && $0.inputs.isEmpty }) {
+                Text("Choose your Google account to connect your mail.")
+                NavigationLink("Sign in with Google") {
+                    GoogleSignInView(provider: name, function: google)
+                }
+            } else {
+                LoginStepView(step: step)
+                if let function = functions.first(where: { $0.id == step.function || $0.action == .login }) {
+                    if function.inputs.isEmpty {
+                        Button { Task { await run(function) } } label: {
+                            HStack { Text("Sign in").bold(); Spacer(); if busy { ProgressView() } }
+                        }.disabled(busy)
+                    } else {
+                        NavigationLink("Continue sign in") { SignInForm(provider: name, context: .provider, function: function) }
+                    }
                 }
             }
         } header: {

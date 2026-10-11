@@ -48,7 +48,7 @@ public final class MediaLoader {
             return Data(raw)
         case .blob(let id):
             guard let client else { throw StoreError.notConnected }
-            key = "blob:\(id)"
+            key = Self.key(media)!
             load = {
                 let data = try await client.readBlob(id: id, maxBytes: Self.maxDownload)
                 Task { try? await client.releaseBlob(id: id) }
@@ -59,7 +59,7 @@ public final class MediaLoader {
                 throw MediaError.unsupportedURL
             }
             if let expiry = media.metadata.expiresAtMs, expiry < Clock.nowMs() { throw MediaError.expired }
-            key = "url:\(string)"
+            key = Self.key(media)!
             load = {
                 var request = URLRequest(url: url)
                 // Never send cookies or credentials to provider URLs.
@@ -87,10 +87,16 @@ public final class MediaLoader {
 
     /// The cached bytes for a media item, without loading.
     public func cached(_ media: Media) -> Data? {
+        if case .bytes(let raw) = media.source { return Data(raw) }
+        return Self.key(media).flatMap { cache[$0] }
+    }
+
+    /// What a media item is cached under; nil for inline bytes.
+    public nonisolated static func key(_ media: Media) -> String? {
         switch media.source {
-        case .bytes(let raw): Data(raw)
-        case .blob(let id): cache["blob:\(id)"]
-        case .url(let url): cache["url:\(url)"]
+        case .bytes: nil
+        case .blob(let id): "blob:\(id)"
+        case .url(let url): "url:\(url)"
         }
     }
 

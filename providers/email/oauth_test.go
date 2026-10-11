@@ -74,3 +74,35 @@ func TestOAuthRedirectValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthIOSCallback(t *testing.T) {
+	p, server := testProvider(t)
+	p.ready = false
+	p.cfg.service = "gmail"
+	p.cfg.clientID = "123-qmsg.apps.googleusercontent.com"
+	p.cfg.oauthRedirect = "com.googleusercontent.apps.123-qmsg:/oauth2redirect"
+	p.cfg.redirects["oauth2.googleapis.com"] = server.OAuth
+	if _, err := p.beginOAuth(""); err != nil {
+		t.Fatal(err)
+	}
+	if p.pending.redirect != p.cfg.oauthRedirect {
+		t.Fatal("mobile callback not selected")
+	}
+	for _, redirect := range []string{"http://127.0.0.1:123/callback", "com.googleusercontent.apps.other:/oauth2redirect", "com.googleusercontent.apps.123-qmsg:/wrong"} {
+		if _, err := p.beginOAuth(redirect); err == nil {
+			t.Fatal("accepted callback for a different app")
+		}
+	}
+	fs, err := p.functions(qmsg.InProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fs[0].Inputs) != 0 {
+		t.Fatal("mobile login asks user for callback address")
+	}
+	state := p.pending.state
+	cred, err := p.finishOAuth(context.Background(), "fixture-code", state)
+	if err != nil || cred.RefreshToken != "fixture-refresh" || server.Exchanges.Load() != 1 {
+		t.Fatalf("iOS exchange: %v", err)
+	}
+}

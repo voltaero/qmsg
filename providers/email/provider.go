@@ -204,14 +204,18 @@ func (p *provider) functions(fc qmsg.FunctionContext) ([]qmsg.Function, error) {
 			secret := input("password", "Password", qmsg.TypeText{}, true)
 			secret.Hint = qmsg.HintSecret{}
 			inputs = append(inputs, secret)
-		} else {
+		} else if p.cfg.oauthRedirect == "" {
 			inputs = append(inputs, input("redirect_uri", "Client callback address", qmsg.TypeText{}, true))
 		}
 		result := qmsg.ValueType(qmsg.TypeNull{})
 		if p.cfg.service == "gmail" {
 			result = oauthResultType
 		}
-		fs := []qmsg.Function{action("login", "Sign in", qmsg.ActionLogin, result, inputs...)}
+		label := "Sign in"
+		if p.cfg.service == "gmail" && p.cfg.oauthRedirect != "" {
+			label = "Sign in with Google"
+		}
+		fs := []qmsg.Function{action("login", label, qmsg.ActionLogin, result, inputs...)}
 		if p.pending != nil {
 			code := input("code", "Authorization code", qmsg.TypeText{}, true)
 			code.Hint = qmsg.HintSecret{}

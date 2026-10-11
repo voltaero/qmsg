@@ -361,24 +361,35 @@ public final class QmsgStore {
         await loadLatest(key)
     }
 
-    /// Loads the newest page of a channel, replacing what was loaded.
+    /// Loads the newest page of a channel, reconciling it with what was loaded.
+    /// A call while one is running loads again once that one is done, since
+    /// its page may predate whatever prompted the call.
     public func loadLatest(_ key: ChannelKey) async {
         let conversation = conversation(key)
-        guard !conversation.isLoading else { return }
+        guard !conversation.isLoading else {
+            conversation.reloadQueued = true
+            return
+        }
         conversation.isLoading = true
         defer { conversation.isLoading = false }
-        do {
-            let result = try await execute(.history(channel: key.channel, cursor: nil, limit: 50), provider: key.provider)
-            guard case .history(let page) = try result.result.get() else { return }
-            conversation.replace(with: page)
-            if let last = page.messages.last {
-                var entry = activity[key] ?? .init(last: nil, unread: 0)
-                if (entry.last?.sentAt ?? 0) <= last.sentAt { entry.last = last }
-                activity[key] = entry
+        repeat {
+            conversation.reloadQueued = false
+            conversation.beginLoad()
+            do {
+                let result = try await execute(.history(channel: key.channel, cursor: nil, limit: 50), provider: key.provider)
+                guard case .history(let page) = try result.result.get() else { conversation.endLoad(); return }
+                conversation.replace(with: page)
+                if let last = page.messages.last {
+                    var entry = activity[key] ?? .init(last: nil, unread: 0)
+                    if (entry.last?.sentAt ?? 0) <= last.sentAt { entry.last = last }
+                    activity[key] = entry
+                }
+            } catch {
+                conversation.endLoad()
+                conversation.loadError = Self.describe(error)
+                return
             }
-        } catch {
-            conversation.loadError = Self.describe(error)
-        }
+        } while conversation.reloadQueued
     }
 
     /// Loads the page before the oldest loaded message.
@@ -387,10 +398,12 @@ public final class QmsgStore {
         guard let cursor = conversation.olderCursor, !conversation.isLoadingOlder, !conversation.isLoading else { return }
         conversation.isLoadingOlder = true
         defer { conversation.isLoadingOlder = false }
+        let generation = conversation.generation
         do {
             let result = try await execute(.history(channel: key.channel, cursor: cursor, limit: 50), provider: key.provider)
             guard case .history(let page) = try result.result.get() else { return }
-            conversation.prepend(page)
+            // Dropped if a refresh replaced the history it continues.
+            conversation.prepend(page, generation: generation)
         } catch {
             conversation.loadError = Self.describe(error)
         }

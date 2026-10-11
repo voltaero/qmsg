@@ -165,3 +165,20 @@ The client and live tests pass on Linux. The full iOS app also builds with the
 Garmin xtool toolchain, signs, and installs on the connected iPhone. The Linux
 build needs an explicit Quick Look SwiftUI overlay import for file previews.
 Xcode and simulator builds have not been checked.
+
+## Gmail sign-in
+
+Install the email component on the server and register a Google iOS OAuth client
+for the app's **signed** bundle ID. In the `gmail` provider template, set
+`service = "gmail"`, `oauth_client_id` and `oauth_redirect_uri`. See
+[`providers/email/README.md`](../../providers/email/README.md) for callback setup.
+Keep the corresponding callback scheme in `Qmsg/Info.plist`.
+
+Accounts → Gmail → Sign in with Google uses the system authentication browser.
+The callback's scheme, path and state must match; qmsg sends the code to the paired
+server, where PKCE verification, token exchange and mail login run. Google
+passwords and mail tokens never enter the sign-in form.
+
+While the Google project is in Testing, add the intended account in Google Auth
+Platform → Audience → Test users. Live Google consent still needs a user; the
+fake mail tests cover the iOS callback, code exchange, refresh and XOAUTH2.

@@ -30,6 +30,7 @@ var oauthResultType = qmsg.TypeRecord{Fields: []qmsg.Field{
 }}
 
 // Desktop native clients create the listener on their device, not the qmsg host.
+// iOS clients use their registered Google client ID scheme instead.
 func callbackURI(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") {
@@ -50,9 +51,15 @@ func randomOAuth() (string, error) {
 }
 func (p *provider) beginOAuth(redirect string) (qmsg.Reply, error) {
 	if p.cfg.clientID == "" {
-		return nil, fmt.Errorf("qmsg needs its registered Google desktop OAuth client ID")
+		return nil, fmt.Errorf("qmsg needs its registered Google OAuth client ID")
 	}
-	if err := callbackURI(redirect); err != nil {
+	if p.cfg.oauthRedirect != "" {
+		expected := "com.googleusercontent.apps." + strings.TrimSuffix(p.cfg.clientID, ".apps.googleusercontent.com") + ":/oauth2redirect"
+		if !strings.HasSuffix(p.cfg.clientID, ".apps.googleusercontent.com") || p.cfg.oauthRedirect != expected || (redirect != "" && redirect != expected) {
+			return nil, qmsg.ErrInvalidInput{Issues: []qmsg.InputIssue{{Code: "redirect_uri", Message: "Use the registered iOS callback for this Google client."}}}
+		}
+		redirect = expected
+	} else if err := callbackURI(redirect); err != nil {
 		return nil, qmsg.ErrInvalidInput{Issues: []qmsg.InputIssue{{Code: "redirect_uri", Message: err.Error()}}}
 	}
 	state, err := randomOAuth()

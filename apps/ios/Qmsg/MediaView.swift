@@ -16,6 +16,22 @@ struct MediaView: View {
     @State private var revealed = false
 
     private var isImage: Bool { media.mime?.hasPrefix("image/") == true }
+    /// Small images show inline without a tap.
+    private var showsInline: Bool { isImage && (!media.metadata.spoiler || revealed) && (media.size ?? 0) <= 8_000_000 }
+
+    /// Decoded images, so a row that is rebuilt while scrolling shows its
+    /// image at once instead of a placeholder of another size.
+    private static let images = NSCache<NSString, UIImage>()
+
+    /// The image, if its bytes are already here.
+    private var image: UIImage? {
+        guard isImage else { return nil }
+        let key = MediaLoader.key(media).map { $0 as NSString }
+        if let key, let hit = Self.images.object(forKey: key) { return hit }
+        guard let bytes = data ?? store.media.cached(media), let image = UIImage(data: bytes) else { return nil }
+        if let key { Self.images.setObject(image, forKey: key) }
+        return image
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -25,13 +41,8 @@ struct MediaView: View {
                         .font(.footnote).padding(10)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
                 }.buttonStyle(.plain)
-            } else if let data, isImage, let image = UIImage(data: data) {
-                Button { Task { await open() } } label: {
-                    Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: 260, maxHeight: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(media.metadata.description ?? media.name ?? "Image")
+            } else if showsInline || image != nil {
+                inlineImage
             } else {
                 Button { Task { await open() } } label: {
                     HStack(spacing: 10) {
@@ -54,15 +65,43 @@ struct MediaView: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .quickLookPreview($preview)
-        .task {
-            // Small images show inline without a tap.
-            if isImage, data == nil, !media.metadata.spoiler, (media.size ?? 0) <= 8_000_000 { await fetch() }
+        .task(id: revealed) {
+            if showsInline, image == nil { await fetch() }
         }
         .onDisappear {
             if let file { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
             file = nil
             preview = nil
         }
+    }
+
+    /// The image in a frame of its final shape, so loading it doesn't
+    /// change the row's height when the provider gave the size.
+    private var inlineImage: some View {
+        let image = image
+        let ratio = media.aspectRatio.map { CGFloat($0) }
+            ?? image.map { $0.size.width / max($0.size.height, 1) }
+            ?? 4 / 3
+        return Button { Task { await open() } } label: {
+            Color.clear
+                .aspectRatio(ratio, contentMode: .fit)
+                .frame(maxWidth: 260, maxHeight: 280)
+                .overlay {
+                    if let image {
+                        Image(uiImage: image).resizable().scaledToFill()
+                    } else {
+                        Rectangle().fill(.quaternary)
+                            .overlay {
+                                if loading { ProgressView() }
+                                else if error != nil { Image(systemName: "photo").font(.title2).foregroundStyle(.secondary) }
+                            }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(loading)
+        .accessibilityLabel(media.metadata.description ?? media.name ?? "Image")
     }
 
     private func open() async {

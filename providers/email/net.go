@@ -18,6 +18,7 @@ type config struct {
 	service, address, imap, smtp, smtpTLS string
 	sentMailbox, trashMailbox             string
 	clientID, clientSecret                string
+	oauthRedirect                         string
 	tls                                   *tls.Config
 	redirects                             map[string]string
 }
@@ -26,6 +27,7 @@ func configuration(s map[string]string) (config, error) {
 	c := config{sentMailbox: s["sent_mailbox"], trashMailbox: s["trash_mailbox"], service: s["service"], address: s["address"], imap: s["imap_addr"], smtp: s["smtp_addr"], smtpTLS: s["smtp_tls"], tls: &tls.Config{MinVersion: tls.VersionTLS12}, redirects: map[string]string{}}
 	if c.service == "gmail" {
 		c.clientID, c.clientSecret = s["oauth_client_id"], s["oauth_client_secret"]
+		c.oauthRedirect = s["oauth_redirect_uri"]
 		c.imap = "imap.gmail.com:993"
 		c.smtp = "smtp.gmail.com:465"
 		c.smtpTLS = "tls"

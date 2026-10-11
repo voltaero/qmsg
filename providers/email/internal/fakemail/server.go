@@ -116,10 +116,15 @@ func Start() (*Server, error) {
 	s.OAuth = lo.Addr().String()
 	s.oauth = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
-		valid := r.URL.Path == "/token" && r.Form.Get("client_id") == "fixture-client"
+		client := r.Form.Get("client_id")
+		valid := r.URL.Path == "/token" && (client == "fixture-client" || client == "123-qmsg.apps.googleusercontent.com")
 		if r.Form.Get("grant_type") == "authorization_code" {
 			s.Exchanges.Add(1)
-			valid = valid && r.Form.Get("code") == "fixture-code" && len(r.Form.Get("code_verifier")) == 43 && strings.HasPrefix(r.Form.Get("redirect_uri"), "http://127.0.0.1:")
+			redirectOK := strings.HasPrefix(r.Form.Get("redirect_uri"), "http://127.0.0.1:")
+			if client == "123-qmsg.apps.googleusercontent.com" {
+				redirectOK = r.Form.Get("redirect_uri") == "com.googleusercontent.apps.123-qmsg:/oauth2redirect"
+			}
+			valid = valid && r.Form.Get("code") == "fixture-code" && len(r.Form.Get("code_verifier")) == 43 && redirectOK
 		} else {
 			s.Refreshes.Add(1)
 			valid = valid && r.Form.Get("grant_type") == "refresh_token" && r.Form.Get("refresh_token") == "fixture-refresh" && !s.RejectRefresh.Load()

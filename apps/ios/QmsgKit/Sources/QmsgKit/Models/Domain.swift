@@ -174,6 +174,14 @@ public struct Media: Codable, Hashable, Sendable {
     }
 }
 
+extension Media {
+    /// Width over height, when the provider reported both.
+    public var aspectRatio: Double? {
+        guard let width = metadata.width, let height = metadata.height, width > 0, height > 0 else { return nil }
+        return Double(width) / Double(height)
+    }
+}
+
 public struct MediaMetadata: Codable, Hashable, Sendable {
     public var width: UInt32?
     public var height: UInt32?

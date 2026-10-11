@@ -162,6 +162,66 @@ import Testing
         #expect(conversation.messages.map(\.id) == ["1", "3"])
     }
 
+    @MainActor @Test func refreshingKeepsOlderHistoryButDropsDeletesInItsWindow() {
+        let key = ChannelKey(provider: "p", channel: ChannelRef(organization: nil, channel: "c"))
+        let conversation = Conversation(key: key)
+        conversation.replace(with: HistoryPage(messages: [message("3", at: 3), message("4", at: 4), message("5", at: 5)], nextCursor: "3"))
+        conversation.prepend(HistoryPage(messages: [message("1", at: 1), message("2", at: 2)], nextCursor: "1"))
+        // Pull to refresh: "4" was deleted while offline and "6" is new.
+        conversation.replace(with: HistoryPage(messages: [message("3", at: 3), message("5", at: 5), message("6", at: 6)], nextCursor: "3"))
+        #expect(conversation.messages.map(\.id) == ["1", "2", "3", "5", "6"], "a refresh must not throw away loaded older history")
+        #expect(conversation.olderCursor == "1", "the cursor must still point before the oldest loaded message")
+        #expect(!conversation.reachedStart)
+    }
+
+    @MainActor @Test func refreshWithoutOverlapStartsOver() {
+        let key = ChannelKey(provider: "p", channel: ChannelRef(organization: nil, channel: "c"))
+        let conversation = Conversation(key: key)
+        conversation.replace(with: HistoryPage(messages: [message("1", at: 1), message("2", at: 2)], nextCursor: "1"))
+        let generation = conversation.generation
+        conversation.replace(with: HistoryPage(messages: [message("8", at: 8), message("9", at: 9)], nextCursor: "8"))
+        #expect(conversation.messages.map(\.id) == ["8", "9"], "a gap between pages can't be bridged, so the old ones go")
+        #expect(conversation.olderCursor == "8")
+        #expect(conversation.generation != generation)
+        // An older page requested before the gap no longer fits.
+        #expect(!conversation.prepend(HistoryPage(messages: [message("0", at: 0)], nextCursor: nil), generation: generation))
+        #expect(conversation.messages.map(\.id) == ["8", "9"])
+        #expect(conversation.olderCursor == "8")
+    }
+
+    @MainActor @Test func eventsDuringALoadSurviveItsPage() {
+        let key = ChannelKey(provider: "p", channel: ChannelRef(organization: nil, channel: "c"))
+        let conversation = Conversation(key: key)
+        conversation.replace(with: HistoryPage(messages: [message("1", at: 1), message("2", at: 2)], nextCursor: nil))
+        conversation.beginLoad()
+        // While the request is out: "3" arrives and "2" is deleted.
+        conversation.apply(.received(message("3", at: 3)), me: "me")
+        conversation.apply(.deleted(channel: key.channel, id: "2"), me: "me")
+        // The page was read before either.
+        conversation.replace(with: HistoryPage(messages: [message("1", at: 1), message("2", at: 2)], nextCursor: nil))
+        #expect(conversation.messages.map(\.id) == ["1", "3"], "the page must neither resurrect a delete nor drop a newer arrival")
+    }
+
+    @MainActor @Test func firstLoadOfAnEmptyChannel() {
+        let key = ChannelKey(provider: "p", channel: ChannelRef(organization: nil, channel: "c"))
+        let conversation = Conversation(key: key)
+        conversation.replace(with: HistoryPage(messages: [], nextCursor: nil))
+        #expect(conversation.loaded && conversation.reachedStart && conversation.messages.isEmpty)
+    }
+
+    @MainActor @Test func imagesReserveTheirShapeAndShareTheCache() {
+        var metadata = MediaMetadata()
+        metadata.width = 1600
+        metadata.height = 900
+        let wide = Media(name: "a.png", mime: "image/png", size: 10, source: .url("https://cdn.example/a.png"), metadata: metadata)
+        #expect(wide.aspectRatio == 1600.0 / 900.0)
+        metadata.height = 0
+        #expect(Media(name: nil, mime: "image/png", size: nil, source: .blob("b"), metadata: metadata).aspectRatio == nil)
+        #expect(MediaLoader.key(wide) == "url:https://cdn.example/a.png")
+        #expect(MediaLoader.key(Media(name: nil, mime: nil, size: nil, source: .blob("b"))) == "blob:b")
+        #expect(MediaLoader.key(Media(name: nil, mime: nil, size: nil, source: .bytes([1]))) == nil)
+    }
+
     private func channel(_ id: String) -> Channel {
         try! QmsgJSON.decode(Channel.self, from: """
         {"id":"\(id)","name":"\(id)","topic":null,"icon":null,"kind":"Text","parent":null,"position":null,"members":null,"accepted_content":[{"kind":"Text","max_size":null,"text_unit":"Chars","mime_types":[]}],"limits":{"max_attachments":null,"max_total_size":null},"mailbox":null}

@@ -79,9 +79,18 @@ The callback stays on the client device even when qmsg runs on a remote LAN host
 or behind a tunnel. Gmail never starts the headless browser service.
 
 This desktop flow follows [Google's native-app OAuth guide](https://developers.google.com/identity/protocols/oauth2/native-app).
-Mobile apps need Google's supported platform login flow and their own client
-registration; this provider currently exposes the desktop PKCE flow only. Do not
-use a desktop registration to bypass Google's mobile redirect rules.
+iOS uses its own Google **iOS** client registration and the system authentication
+browser. Set `oauth_client_id` to that client ID, and set `oauth_redirect_uri` to
+`com.googleusercontent.apps.<client-ID-prefix>:/oauth2redirect` (remove the
+`.apps.googleusercontent.com` suffix from the client ID). Register the same scheme
+in the app's `CFBundleURLTypes`. The registered bundle ID must match the signed app;
+xtool's installed bundle ID may have an `XTL-` prefix.
+
+With `oauth_redirect_uri` set, `login` takes no callback input. qmsg opens Google's
+page with `ASWebAuthenticationSession`, checks the returned scheme, path and state,
+and submits the code through `finish_login`. PKCE and tokens stay on the server.
+The provider rejects any other callback, including desktop loopback callbacks.
+Do not use a desktop registration to bypass Google's mobile redirect rules.
 
 Revoked refresh tokens return the account to `LoginRequired`. `logout` deletes
 local credentials; it does not revoke the Google grant. Google project

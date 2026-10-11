@@ -15,8 +15,11 @@ struct ChatView: View {
     @State private var tool: MessageTool = .react
     @State private var deleting: Message?
     @State private var error: String?
-    /// Whether the newest message is on screen; only then do new messages scroll.
+    /// Whether the reader is at the end; only then does the chat follow
+    /// new messages, a growing composer or the keyboard.
     @State private var atBottom = true
+    /// The reader is dragging or flinging; never scroll under their finger.
+    @State private var scrolling = false
     /// Mentions picked in the composer: what's shown ("@Ana") to what's sent ("<@123>").
     @State private var mentions: [String: String] = [:]
 
@@ -90,14 +93,31 @@ struct ChatView: View {
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .scrollDismissesKeyboard(.interactively)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
-            } action: { _, bottom in
-                atBottom = bottom
+            .onScrollPhaseChange { _, phase in
+                scrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+            }
+            .onScrollGeometryChange(for: ScrollMetrics.self, of: ScrollMetrics.init) { old, new in
+                // The keyboard, the composer or the last rows changed size while
+                // the reader was at the end: stay there. Otherwise the offset is
+                // left alone, so reading older messages never jumps.
+                if atBottom, !scrolling, new.viewport != old.viewport || new.content != old.content,
+                   old.distance <= ScrollMetrics.near {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    return
+                }
+                // Hysteresis, so the jump button doesn't flicker at the edge.
+                if atBottom ? new.distance > ScrollMetrics.far : new.distance <= ScrollMetrics.near {
+                    atBottom.toggle()
+                }
             }
             .onChange(of: conversation.messages.last?.id) { old, _ in
-                // The first load is marked read by the entry task.
-                guard old != nil else { return }
+                guard old != nil else {
+                    // The first page came in after the view appeared, so the
+                    // initial anchor didn't apply. The entry task marks it read.
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    atBottom = true
+                    return
+                }
                 // Follow new messages only if the reader is already at the end,
                 // or the message is their own.
                 if atBottom || conversation.messages.last?.author == scope?.me {
@@ -108,21 +128,35 @@ struct ChatView: View {
             .onChange(of: conversation.pending.count) { old, new in
                 if new > old { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if !atBottom {
-                    Button("Jump to latest", systemImage: "chevron.down") {
-                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    if !atBottom {
+                        HStack {
+                            Spacer()
+                            Button("Jump to latest", systemImage: "chevron.down") {
+                                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                            }
+                            .labelStyle(.iconOnly).font(.callout.bold())
+                            .frame(width: 44, height: 44)
+                            .chatGlass(in: Circle(), interactive: true)
+                        }
+                        .padding(.horizontal, 12).padding(.top, 8)
                     }
-                    .labelStyle(.iconOnly).font(.callout.bold())
-                    .frame(width: 44, height: 44)
-                    .chatGlass(in: Circle(), interactive: true)
-                    .padding(12)
+                    if channel?.isWritable == true {
+                        composer
+                    } else if channel != nil {
+                        Text("You can't send messages here.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity).padding(12).background(.bar)
+                    }
                 }
             }
             .refreshable { await store.loadLatest(key) }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            ConnectionBanner(link: store.link) { store.resume() }
+            // An overlay, not an inset: changing the scroll view's insets as
+            // the link comes and goes would move what the reader sees.
+            .overlay(alignment: .top) {
+                ConnectionBanner(link: store.link) { store.resume() }
+            }
         }
         .navigationTitle(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel)
         .navigationBarTitleDisplayMode(.inline)
@@ -132,15 +166,6 @@ struct ChatView: View {
                     Text(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel).font(.headline).lineLimit(1)
                     Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if channel?.isWritable == true {
-                composer
-            } else if channel != nil {
-                Text("You can't send messages here.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(12).background(.bar)
             }
         }
         .task {
@@ -258,7 +283,7 @@ struct ChatView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 44, height: 44)
                     .chatGlass(in: Circle(), interactive: true)
-                TextField("Message", text: $text, axis: .vertical).lineLimit(1...6)
+                ComposerTextView(text: $text) { attachments.append(contentsOf: $0) }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                     .chatGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 Button("Send", systemImage: "arrow.up") { send() }
@@ -396,6 +421,29 @@ struct ChatView: View {
         attachments = []
         reply = nil
         error = nil
+    }
+}
+
+/// Where the scroll view is relative to the end of the chat.
+private struct ScrollMetrics: Equatable {
+    /// Within this of the end counts as at the end.
+    static let near: CGFloat = 80
+    /// Farther than this counts as reading back.
+    static let far: CGFloat = 200
+
+    /// How far the end of the content is below the visible area.
+    var distance: CGFloat
+    var viewport: CGFloat
+    var content: CGFloat
+
+    init(_ geometry: ScrollGeometry) {
+        // The container is the whole scroll view and the offset includes the
+        // insets, so the furthest offset is the content plus its bottom inset
+        // less the container.
+        let maxOffset = geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
+        distance = maxOffset - geometry.contentOffset.y
+        viewport = geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom
+        content = geometry.contentSize.height
     }
 }
 

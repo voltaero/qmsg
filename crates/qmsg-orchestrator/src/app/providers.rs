@@ -54,6 +54,8 @@ pub(super) struct Manager {
 fn fields(spec: &ProviderSpec) -> Vec<Field> {
     let keys: Vec<String> = if spec.name == "echo" {
         vec!["server".into()]
+    } else if spec.name == "gmail" {
+        vec!["address".into()]
     } else {
         spec.settings
             .keys()
@@ -68,12 +70,14 @@ fn fields(spec: &ProviderSpec) -> Vec<Field> {
     };
     keys.into_iter()
         .map(|id| Field {
-            label: if id == "server" {
+            label: if id == "address" {
+                "Email address".into()
+            } else if id == "server" {
                 "Server address".into()
             } else {
                 id.replace('_', " ")
             },
-            required: id == "server",
+            required: id == "server" || id == "address",
             secret: false,
             id,
         })
@@ -161,6 +165,7 @@ impl Manager {
                         "discord" => "Discord".into(),
                         "echo" => "Echo".into(),
                         "email" => "Email".into(),
+                        "gmail" => "Gmail".into(),
                         _ => spec.name.clone(),
                     },
                     fields: fields(spec),
@@ -341,6 +346,29 @@ mod tests {
     use super::*;
     use crate::Encryption;
     use tonic::Request;
+
+    #[test]
+    fn gmail_setup_only_asks_for_the_mail_address() {
+        let spec = ProviderSpec {
+            name: "gmail".into(),
+            wasm: "email.wasm".into(),
+            settings: [
+                ("service".into(), "gmail".into()),
+                ("address".into(), "".into()),
+                ("oauth_client_id".into(), "registered-client".into()),
+                ("oauth_redirect_uri".into(), "registered-callback".into()),
+            ]
+            .into(),
+        };
+        let visible = fields(&spec);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "address");
+        assert!(visible[0].required);
+        assert_eq!(
+            public_settings(&spec),
+            [("address".into(), "".into())].into()
+        );
+    }
 
     #[tokio::test]
     async fn account_changes_reset_open_and_resumed_watch_streams() {

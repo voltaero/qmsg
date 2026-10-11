@@ -203,6 +203,15 @@ async fn email_component_logs_in_reads_sends_replies_and_sets_flags() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn gmail_component_refreshes_oauth_and_uses_xoauth2() {
+    gmail_oauth_flow(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gmail_ios_component_uses_registered_callback_and_xoauth2() {
+    gmail_oauth_flow(true).await;
+}
+
+async fn gmail_oauth_flow(ios: bool) {
     let fake = MailServer::start();
     let dir = tempfile::tempdir().unwrap();
     let host = Orchestrator::new(dir.path(), Encryption::Plaintext)
@@ -216,7 +225,24 @@ async fn gmail_component_refreshes_oauth_and_uses_xoauth2() {
                 wasm: support::go_component("providers/email"),
                 settings: [
                     ("service".into(), "gmail".into()),
-                    ("oauth_client_id".into(), "fixture-client".into()),
+                    (
+                        "oauth_client_id".into(),
+                        if ios {
+                            "123-qmsg.apps.googleusercontent.com"
+                        } else {
+                            "fixture-client"
+                        }
+                        .into(),
+                    ),
+                    (
+                        "oauth_redirect_uri".into(),
+                        if ios {
+                            "com.googleusercontent.apps.123-qmsg:/oauth2redirect"
+                        } else {
+                            ""
+                        }
+                        .into(),
+                    ),
                     ("address".into(), "alice@example.test".into()),
                     ("ca_pem".into(), fake.addresses.ca.clone()),
                     (
@@ -243,10 +269,14 @@ async fn gmail_component_refreshes_oauth_and_uses_xoauth2() {
         .call_function(
             login,
             FunctionContext::Provider,
-            Arguments::from([(
-                "redirect_uri".into(),
-                Value::Text("http://127.0.0.1:43210/callback".into()),
-            )]),
+            if ios {
+                Arguments::new()
+            } else {
+                Arguments::from([(
+                    "redirect_uri".into(),
+                    Value::Text("http://127.0.0.1:43210/callback".into()),
+                )])
+            },
         )
         .await
         .unwrap();

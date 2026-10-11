@@ -15,7 +15,16 @@ struct SignInForm: View {
     @State private var result: String?
     @State private var error: String?
 
+    @ViewBuilder
     var body: some View {
+        if function.label == "Sign in with Google", function.action == .login, function.inputs.isEmpty {
+            GoogleSignInView(provider: provider, function: function)
+        } else {
+            signInForm
+        }
+    }
+
+    private var signInForm: some View {
         Form {
             if !function.description.isEmpty { Section { Text(function.description) } }
             if function.action == .login, let step = store.providers[provider]?.status.loginStep {

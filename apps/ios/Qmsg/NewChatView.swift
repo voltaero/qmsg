@@ -10,6 +10,12 @@ struct NewChatView: View {
     @State private var query = ""
     @State private var organization = ""
     private var context: FunctionContext { organization.isEmpty ? .provider : .organization(organization) }
+    /// Mail accounts write from their folders instead.
+    private var chatAccounts: [ProviderState] {
+        store.sortedProviders.filter { provider in
+            !provider.organizations.values.contains { $0.scope.channels.values.contains(where: \.isMailbox) }
+        }
+    }
     @State private var function: Function?
     @State private var contacts: [CompletionItem] = []
     @State private var selected: [CompletionItem] = []
@@ -21,7 +27,7 @@ struct NewChatView: View {
         List {
             Section {
                 Picker("Account", selection: $provider) {
-                    ForEach(store.sortedProviders) { account in Text(accounts.label(for: account.name)).tag(account.name) }
+                    ForEach(chatAccounts) { account in Text(accounts.label(for: account.name)).tag(account.name) }
                 }.disabled(busy)
                 if let account = store.providers[provider], !account.sortedOrganizations.isEmpty {
                     Picker("Contacts in", selection: $organization) {
@@ -72,7 +78,7 @@ struct NewChatView: View {
                     .disabled(selected.isEmpty || busy || loading)
             }
         }
-        .onAppear { if provider.isEmpty { provider = store.sortedProviders.first?.name ?? "" } }
+        .onAppear { if provider.isEmpty { provider = chatAccounts.first?.name ?? "" } }
         .onChange(of: provider) { _, _ in
             organization = store.providers[provider]?.standalone.users.isEmpty == true ? (store.providers[provider]?.sortedOrganizations.first?.id ?? "") : ""
             selected = []; query = ""; function = nil; contacts = []

@@ -51,7 +51,12 @@ struct ChatsView: View {
             }
         } detail: {
             if let selected {
-                ChatView(key: selected).id(selected)
+                if store.providers[selected.provider]?.channel(selected.channel)?.isMailbox == true {
+                    // Mail pushes messages on its own stack.
+                    NavigationStack { MailboxView(key: selected) }.id(selected)
+                } else {
+                    ChatView(key: selected).id(selected)
+                }
             } else {
                 ContentUnavailableView("Choose a chat", systemImage: "bubble.left.and.bubble.right", description: Text("Pick a conversation to read and reply."))
             }
@@ -132,7 +137,11 @@ struct ChatsView: View {
                     NavigationLink(value: item.key) { ChatRow(item: item) }
                 }
                 ForEach(servers) { org in
-                    serverGroup(provider, org)
+                    if org.scope.channels.values.contains(where: \.isMailbox) {
+                        mailGroup(provider, org)
+                    } else {
+                        serverGroup(provider, org)
+                    }
                 }
                 if direct.isEmpty && servers.isEmpty {
                     Text(provider.status.isReady ? "No chats yet" : AccountHealth(status: provider.status, enabled: true).title + "…")
@@ -187,6 +196,43 @@ struct ChatsView: View {
         }
     }
 
+    /// A mail account's folders, like Mail's sidebar: Inbox and the special
+    /// folders, then the rest folded away.
+    @ViewBuilder
+    private func mailGroup(_ provider: ProviderState, _ org: OrganizationEntry) -> some View {
+        let folders = org.scope.mailboxes.filter { matches($0.mailboxName) || matches(org.name) }
+        let main = folders.filter { MailboxRole($0) != .other }
+        let others = folders.filter { MailboxRole($0) == .other }
+        if org.name != accounts.label(for: provider.name) {
+            Text(org.name).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                .listRowSeparator(.hidden)
+        }
+        ForEach(main) { folder in mailboxLink(provider, org, folder) }
+        if !others.isEmpty {
+            let id = provider.name + "\n" + org.id
+            DisclosureGroup("Folders", isExpanded: Binding(get: { !search.isEmpty || expanded.contains(id) }, set: { open in
+                if open { expanded.insert(id) } else { expanded.remove(id) }
+            })) {
+                ForEach(others) { folder in mailboxLink(provider, org, folder) }
+            }
+        }
+    }
+
+    private func mailboxLink(_ provider: ProviderState, _ org: OrganizationEntry, _ folder: Channel) -> some View {
+        let key = ChannelKey(provider: provider.name, channel: ChannelRef(organization: org.id, channel: folder.id))
+        let role = MailboxRole(folder)
+        // Unread mail among what has been loaded; the server keeps no count.
+        let unread = role == .inbox ? store.conversation(key).messages.reduce(0) { $0 + ($1.email?.read == false ? 1 : 0) } : 0
+        return NavigationLink(value: key) {
+            HStack(spacing: 10) {
+                Image(systemName: role.symbol).foregroundStyle(.tint).frame(width: 24)
+                Text(folder.mailboxName).lineLimit(1)
+                Spacer(minLength: 4)
+                if unread > 0 { Text("\(unread)").font(.subheadline).foregroundStyle(.secondary).monospacedDigit() }
+            }
+        }
+    }
+
     @ViewBuilder
     private var emptyState: some View {
         if store.providers.isEmpty {
@@ -216,7 +262,7 @@ struct ChatsView: View {
         return store.recentKeys.compactMap { key -> ChatItem? in
             guard filter == nil || key.provider == filter,
                   let provider = store.providers[key.provider],
-                  let channel = provider.channel(key.channel) else { return nil }
+                  let channel = provider.channel(key.channel), !channel.isMailbox else { return nil }
             return chatItem(provider, organization: key.channel.organization, channel: channel)
         }
     }

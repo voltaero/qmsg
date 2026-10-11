@@ -128,30 +128,27 @@ struct ChatView: View {
             .onChange(of: conversation.pending.count) { old, new in
                 if new > old { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
                     if !atBottom {
-                        HStack {
-                            Spacer()
-                            Button("Jump to latest", systemImage: "chevron.down") {
-                                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-                            }
-                            .labelStyle(.iconOnly).font(.callout.bold())
-                            .frame(width: 44, height: 44)
-                            .chatGlass(in: Circle(), interactive: true)
+                        Button("Jump to latest", systemImage: "chevron.down") {
+                            withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
-                        .padding(.horizontal, 12).padding(.top, 8)
-                    }
-                    if channel?.isWritable == true {
-                        composer
-                    } else if channel != nil {
-                        Text("You can't send messages here.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity).padding(12).background(.bar)
+                        .labelStyle(.iconOnly)
                     }
                 }
             }
-            .refreshable { await store.loadLatest(key) }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if channel?.isWritable == true {
+                    composer
+                } else if channel != nil {
+                    Text("You can't send messages here.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(12).background(.bar)
+                }
+            }
+            // No pull to refresh: in a chat that starts at the bottom, pulling
+            // at the top means "older", and a reload there jumped the view.
             // An overlay, not an inset: changing the scroll view's insets as
             // the link comes and goes would move what the reader sees.
             .overlay(alignment: .top) {

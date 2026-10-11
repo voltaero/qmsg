@@ -88,6 +88,11 @@ The app has three tabs:
   account's direct messages and its servers, which expand to show channels.
   Chips at the top filter by account. Accounts that need you, such as one
   waiting for sign-in, show as a banner that opens that account.
+  Mail accounts list their folders instead, Inbox and special folders first.
+  A folder opens as a message list, newest first; a message opens with its
+  sender, recipients, body and attachments. HTML mail renders with scripts,
+  network loads and remote images blocked; links open in Safari. Reply,
+  compose, star, read state, move and trash use the provider's mail actions.
 - **Accounts** lists every account on the server with its network and status.
   Tap **+** to add one: pick a network your server has installed, give it a
   name like "Work", and fill in any connection fields. You can add several

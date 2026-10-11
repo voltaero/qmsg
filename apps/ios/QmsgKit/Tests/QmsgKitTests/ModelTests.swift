@@ -209,6 +209,69 @@ import Testing
         #expect(conversation.loaded && conversation.reachedStart && conversation.messages.isEmpty)
     }
 
+    @MainActor @Test func mailFlagChangesDoNotCountAsUnreadArrivals() throws {
+        let store = QmsgStore(accounts: MemoryAccountStore())
+        let id = ProviderID(name: "gmail", instance: 1)
+        let org = OrganizationEntry(id: "me@example.com", name: "me@example.com", icon: nil, scope: Scope(me: "me@example.com", channels: ["INBOX": try mailbox("INBOX", [])]))
+        store.apply(.snapshot(Snapshot(providers: [ProviderView(provider: id, status: .ready, organizations: [org], standalone: Scope())], epoch: "epoch", sequence: 0)))
+        let key = ChannelKey(provider: "gmail", channel: ChannelRef(organization: org.id, channel: "INBOX"))
+        let mail = try mail("7:1", read: true, html: nil, contentIDs: [:], channel: key.channel)
+        // The provider re-sends a mail after star or mark read.
+        store.apply(.update(.message(provider: id, event: .received(mail)), epoch: "epoch", sequence: 1))
+        store.apply(.update(.message(provider: id, event: .received(mail)), epoch: "epoch", sequence: 2))
+        #expect(store.activity[key]?.unread ?? 0 == 0)
+        #expect(store.activity[key]?.last?.id == "7:1")
+    }
+
+    @Test func mailboxesSortLikeMailAndUseTheirOwnNames() throws {
+        let scope = Scope(channels: [
+            "Receipts": try mailbox("Receipts", []),
+            "[Gmail]/Trash": try mailbox("[Gmail]/Trash", ["\\HasNoChildren", "\\Trash"]),
+            "[Gmail]/Sent Mail": try mailbox("[Gmail]/Sent Mail", ["\\Sent"]),
+            "INBOX": try mailbox("INBOX", []),
+            "[Gmail]/Starred": try mailbox("[Gmail]/Starred", ["\\Flagged"]),
+            "Spam": try mailbox("Spam", []),
+        ])
+        #expect(scope.mailboxes.map(\.mailboxName) == ["Inbox", "Starred", "Sent Mail", "Spam", "Trash", "Receipts"])
+        #expect(MailboxRole(scope.channels["Spam"]!) == .junk)
+    }
+
+    @Test func mailKeepsUnreferencedInlineImagesAsAttachments() throws {
+        let image = Content.image(Media(name: "logo.png", mime: "image/png", size: 1, source: .bytes([1])))
+        let photo = Content.image(Media(name: "photo.jpg", mime: "image/jpeg", size: 1, source: .bytes([2])))
+        var mail = try mail("1:1", read: false, html: #"<p>Hi&nbsp;<b>there</b></p><img src="cid:Logo@x">"#, contentIDs: ["0": "logo@x", "1": "photo@x"])
+        mail.content = [image, photo]
+        #expect(mail.inlineImages == [0: "logo@x"])
+        #expect(mail.mailAttachments.map(\.name) == ["photo.jpg"])
+        #expect(mail.mailBody == "Hi there")
+    }
+
+    @Test func mailIgnoresInvalidInlineImageIndexes() throws {
+        var mail = try mail("1:1", read: false, html: #"<img src="cid:logo@x">"#,
+                            contentIDs: ["-1": "logo@x", "1": "logo@x", "invalid": "logo@x"])
+        mail.content = [.image(Media(name: "logo.png", mime: "image/png", size: 1, source: .bytes([1])))]
+        #expect(mail.inlineImages.isEmpty)
+        #expect(mail.mailAttachments.count == 1)
+    }
+
+    private func mailbox(_ id: String, _ attributes: [String]) throws -> Channel {
+        let attrs = String(data: try JSONEncoder().encode(attributes), encoding: .utf8)!
+        return try QmsgJSON.decode(Channel.self, from: """
+        {"id":"\(id)","name":"\(id)","topic":null,"icon":null,"kind":{"Custom":"mailbox"},"parent":null,"position":null,"members":null,"accepted_content":[],"limits":{"max_attachments":null,"max_total_size":null},"mailbox":{"delimiter":"/","attributes":\(attrs)}}
+        """)
+    }
+
+    private func mail(_ id: String, read: Bool, html: String?, contentIDs: [String: String], channel: ChannelRef = ChannelRef(organization: "me@example.com", channel: "INBOX")) throws -> Message {
+        let encoder = JSONEncoder()
+        let html = String(data: try encoder.encode(html), encoding: .utf8)!
+        let ids = String(data: try encoder.encode(contentIDs), encoding: .utf8)!
+        let ref = String(data: try encoder.encode(channel), encoding: .utf8)!
+        return try QmsgJSON.decode(Message.self, from: """
+        {"id":"\(id)","channel":\(ref),"author":"ana@example.com","sent_at":1,"reply_to":null,"content":[],"edited_at":null,"reactions":[],"nonce":null,
+         "email":{"subject":"Hi","from":[{"address":"ana@example.com","name":"Ana"}],"to":[],"cc":[],"bcc":[],"reply_to":[],"message_id":null,"in_reply_to":null,"references":[],"html":\(html),"content_ids":\(ids),"read":\(read),"starred":false,"draft":false}}
+        """)
+    }
+
     @MainActor @Test func imagesReserveTheirShapeAndShareTheCache() {
         var metadata = MediaMetadata()
         metadata.width = 1600

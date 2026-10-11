@@ -239,7 +239,9 @@ public final class QmsgStore {
             case .received(let message):
                 var entry = activity[key] ?? .init(last: nil, unread: 0)
                 if (entry.last?.sentAt ?? 0) <= message.sentAt { entry.last = message }
-                if message.author != me && key != visible && message.nonce == nil { entry.unread += 1 }
+                // Mail sends flag changes as messages again, and its unread
+                // state is the read flag, not a count of arrivals.
+                if message.author != me && key != visible && message.nonce == nil && message.email == nil { entry.unread += 1 }
                 activity[key] = entry
             case .deleted(_, let id) where activity[key]?.last?.id == id:
                 activity[key]?.last = nil
@@ -516,6 +518,13 @@ public final class QmsgStore {
                 $0.state = !submitted || error is StoreError || error.rpcCode == .invalidArgument || $0.content.contains(where: Self.isUnsentUpload) ? .failed(message) : .unknown(message)
             }
         }
+    }
+
+    /// Uploads a file for a function's content input, such as a mail body.
+    public func upload(_ attachment: Attachment, provider name: String) async throws -> Content {
+        guard let client, let provider = providers[name] else { throw StoreError.notConnected }
+        let media = try await client.upload(provider: provider.id, name: attachment.name, mime: attachment.mime, data: attachment.data)
+        return Self.content(attachment.kind, media)
     }
 
     private static func isUnsentUpload(_ content: Content) -> Bool {

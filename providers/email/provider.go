@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,9 @@ type provider struct {
 	cfg           config
 	cred          credential
 	folders       map[string]qmsg.Channel
+	states        map[string]folderState
+	published     []qmsg.Channel
+	reported      qmsg.ProviderStatus
 	known         map[string]qmsg.EmailAddress
 	ready         bool
 }
@@ -40,9 +44,23 @@ func (p *provider) storeCredential() error {
 	}
 	return p.cx.SecretSet("credentials", b)
 }
+
+// status reports s unless it is already the current status, so that each
+// poll does not repeat Ready or the same failure.
 func (p *provider) status(s qmsg.ProviderStatus) {
-	if p.cx != nil {
+	if p.cx != nil && !reflect.DeepEqual(s, p.reported) {
+		p.reported = s
 		p.cx.Status(s)
+	}
+}
+
+// gaps asks clients to reload folders whose contents changed.
+func (p *provider) gaps(folders []string) {
+	if p.cx == nil {
+		return
+	}
+	for _, id := range folders {
+		p.cx.Emit(qmsg.Gap{Channel: qmsg.ChannelRef{Organization: qmsg.Str(p.cfg.address), Channel: id}})
 	}
 }
 func (p *provider) loginRequired() {
@@ -110,14 +128,16 @@ func run(cx *qmsg.Context) error {
 					}
 					if p.ready || p.cred.Password != "" || p.cred.RefreshToken != "" {
 						pollCtx, stop := context.WithTimeout(ctx, 45*time.Second)
-						err := p.list(pollCtx)
+						changed, err := p.sync(pollCtx)
 						stop()
 						if err == nil {
 							p.ready = true
 							p.status(qmsg.StatusReady{})
-							for id := range p.folders {
-								p.cx.Emit(qmsg.Gap{Channel: qmsg.ChannelRef{Organization: qmsg.Str(cfg.address), Channel: id}})
-							}
+							// A failed poll keeps the old baseline, so changes
+							// made while disconnected still show up here.
+							p.gaps(changed)
+						} else if p.pending != nil && !p.ready {
+							// Keep showing the pending sign-in step.
 						} else if authenticationError(err) {
 							p.loginRequired()
 						} else {
@@ -361,7 +381,8 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		} else {
 			p.cred = credential{Password: text(call.Arguments, "password")}
 		}
-		if e = p.list(ctx); e != nil {
+		changed, e := p.sync(ctx)
+		if e != nil {
 			p.cred = old
 			return nil, e
 		}
@@ -371,6 +392,8 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		}
 		p.ready = true
 		p.status(qmsg.StatusReady{})
+		// Signing in again after a revoked login keeps the old baseline.
+		p.gaps(changed)
 		return null, nil
 	case "logout":
 		if e = p.cx.SecretDelete("credentials"); e != nil {
@@ -378,6 +401,8 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		}
 		p.cred = credential{}
 		p.folders = map[string]qmsg.Channel{}
+		p.states = nil
+		p.published = nil
 		p.known = map[string]qmsg.EmailAddress{}
 		p.cx.Directory(qmsg.OrganizationRemoved{ID: p.cfg.address})
 		p.loginRequired()

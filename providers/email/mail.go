@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,9 +145,55 @@ func (p *provider) withMailbox(ctx context.Context, ref qmsg.ChannelRef, fn func
 	return fn(c, selected)
 }
 func (p *provider) list(ctx context.Context) error {
+	_, e := p.sync(ctx)
+	return e
+}
+
+// folderState is what STATUS reports about a mailbox. Any new, expunged or
+// re-flagged message changes it: UIDNEXT and MESSAGES cover arrivals and
+// deletions, UNSEEN covers read state, and HIGHESTMODSEQ (with CONDSTORE)
+// covers every flag change. Without CONDSTORE, star changes made by other
+// clients are not detected.
+type folderState struct {
+	validity, messages, unseen uint32
+	next                       imap.UID
+	modseq                     uint64
+}
+
+func statusState(d *imap.StatusData) folderState {
+	s := folderState{validity: d.UIDValidity, next: d.UIDNext, modseq: d.HighestModSeq}
+	if d.NumMessages != nil {
+		s.messages = *d.NumMessages
+	}
+	if d.NumUnseen != nil {
+		s.unseen = *d.NumUnseen
+	}
+	return s
+}
+
+// changedFolders lists mailboxes whose state differs from the previous sync,
+// including ones that are new or whose STATUS failed last time. The first
+// sync only records a baseline.
+func changedFolders(old, now map[string]folderState) []string {
+	if old == nil {
+		return nil
+	}
+	changed := []string{}
+	for name, s := range now {
+		if prev, ok := old[name]; !ok || prev != s {
+			changed = append(changed, name)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+// sync lists folders, publishes the directory when it changed, and returns
+// the folders whose contents changed since the last sync.
+func (p *provider) sync(ctx context.Context) ([]string, error) {
 	c, conn, e := p.openIMAP(ctx)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	defer c.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -157,7 +204,7 @@ func (p *provider) list(ctx context.Context) error {
 	folders := map[string]qmsg.Channel{}
 	for data := cmd.Next(); data != nil; data = cmd.Next() {
 		if len(folders) >= 1024 {
-			return fmt.Errorf("too many mailboxes")
+			return nil, fmt.Errorf("too many mailboxes")
 		}
 		attrs := []string{}
 		skip := false
@@ -171,7 +218,7 @@ func (p *provider) list(ctx context.Context) error {
 			continue
 		}
 		if len(data.Mailbox) > qmsg.MaxID {
-			return fmt.Errorf("mailbox name exceeds protocol limit")
+			return nil, fmt.Errorf("mailbox name exceeds protocol limit")
 		}
 		ch := qmsg.Channel{ID: data.Mailbox, Name: data.Mailbox, Kind: qmsg.ChannelKind{Tag: qmsg.ChannelCustom, Custom: "mailbox"}, Mailbox: &qmsg.Mailbox{Attributes: attrs}}
 		if data.Delim != 0 {
@@ -181,19 +228,42 @@ func (p *provider) list(ctx context.Context) error {
 		folders[ch.ID] = ch
 	}
 	if e = cmd.Close(); e != nil {
-		return e
+		return nil, e
 	}
-	p.folders = folders
-	p.moveSupported = c.Caps().Has(imap.CapMove)
-	if p.cx != nil {
-		channels := []qmsg.Channel{}
-		for _, ch := range folders {
-			channels = append(channels, ch)
+	channels := []qmsg.Channel{}
+	for _, ch := range folders {
+		channels = append(channels, ch)
+	}
+	sort.Slice(channels, func(i, j int) bool { return channels[i].ID < channels[j].ID })
+	options := &imap.StatusOptions{NumMessages: true, UIDNext: true, UIDValidity: true, NumUnseen: true, HighestModSeq: c.Caps().Has(imap.CapCondStore)}
+	// Pipeline the STATUS commands; Gmail accounts have dozens of labels.
+	cmds := make([]*imapclient.StatusCommand, len(channels))
+	for i, ch := range channels {
+		cmds[i] = c.Status(ch.ID, options)
+	}
+	states := map[string]folderState{}
+	for i, ch := range channels {
+		d, e := cmds[i].Wait()
+		var ie *imap.Error
+		if errors.As(e, &ie) {
+			// The folder is listed but refuses STATUS. Leave it without a
+			// baseline; it reports a change once STATUS works again.
+			continue
+		} else if e != nil {
+			return nil, e
 		}
-		sort.Slice(channels, func(i, j int) bool { return channels[i].ID < channels[j].ID })
+		states[ch.ID] = statusState(d)
+	}
+	changed := changedFolders(p.states, states)
+	p.folders = folders
+	p.states = states
+	p.moveSupported = c.Caps().Has(imap.CapMove)
+	// Polls repeat the same listing; only publish a different one.
+	if p.cx != nil && !reflect.DeepEqual(channels, p.published) {
+		p.published = channels
 		p.cx.Directory(qmsg.OrganizationUpserted{Organization: qmsg.Organization{ID: p.cfg.address, Name: p.cfg.address, Me: qmsg.Str(p.cfg.address), Users: p.users(), Channels: channels}})
 	}
-	return nil
+	return changed, nil
 }
 func (p *provider) validRef(ref qmsg.ChannelRef) bool {
 	if ref.Organization == nil || *ref.Organization != p.cfg.address {

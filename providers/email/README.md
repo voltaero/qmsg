@@ -150,8 +150,14 @@ address syntax; it cannot prove that an address exists or will accept mail.
 - 100,000 messages per selected mailbox, 1,024 folders, 2,000 learned addresses.
 - 16 queued/running command workers with one mail operation at a time. Each
   operation opens its own connection, bounds network time and closes on cancel.
-- A 60-second folder poll retries connection failures and emits `Gap` events.
-  Apps reload visible history on a gap. This is polling, not IMAP IDLE push.
+- A 60-second folder poll retries connection failures. It compares each
+  folder's `STATUS` (UIDVALIDITY, UIDNEXT, MESSAGES, UNSEEN, and HIGHESTMODSEQ
+  when the server has CONDSTORE) with the previous poll and emits `Gap` only for
+  folders that changed, new folders included. A failed poll keeps the previous
+  state, so changes made while disconnected are reported after reconnecting.
+  Unchanged polls repeat neither the directory nor the `Ready` status. Without
+  CONDSTORE, a star changed by another client is not detected. Apps reload
+  visible history on a gap. This is polling, not IMAP IDLE push.
 
 Large-mail lazy part downloads, draft editing, server-side message search,
 Gmail-specific label/thread IDs and alternate SMTP credentials are not implemented.
@@ -162,7 +168,7 @@ silently truncating mail or claiming unsupported actions.
 
 From `providers/email`, `go test ./...` starts temporary TLS IMAP/SMTP servers
 with an in-memory mailbox. It covers MIME, attachments, Bcc, flags, paging,
-UIDVALIDITY, MOVE, TLS/STARTTLS, cancellation, Sent-copy failure, unknown SMTP
+UIDVALIDITY, MOVE, poll change detection, TLS/STARTTLS, cancellation, Sent-copy failure, unknown SMTP
 delivery, Gmail defaults, PKCE, callback validation, replay/expiry/cancellation, OAuth refresh
 and XOAUTH2. No live account is used.
 

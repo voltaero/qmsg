@@ -275,3 +275,95 @@ func TestDefiniteSMTPFailure(t *testing.T) {
 		t.Fatal("definite SMTP rejection became unknown")
 	}
 }
+
+// Polls must only invalidate folders that changed, so clients do not reload
+// every mailbox each minute.
+func TestSyncReportsOnlyChangedFolders(t *testing.T) {
+	p, s := testProvider(t)
+	ctx := context.Background()
+	sync := func(want ...string) {
+		t.Helper()
+		changed, e := p.sync(ctx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if strings.Join(changed, ",") != strings.Join(want, ",") {
+			t.Fatalf("changed folders: got %v, want %v", changed, want)
+		}
+	}
+	sync()
+	raw := []byte("From: bob@example.test\r\nTo: alice@example.test\r\nSubject: hi\r\n\r\nBody\r\n")
+	for i := 0; i < 2; i++ {
+		if e := s.Append("INBOX", raw); e != nil {
+			t.Fatal(e)
+		}
+	}
+	sync("INBOX")
+	sync()
+
+	// Another client reads, then expunges a message.
+	c, _, e := p.openIMAP(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer c.Close()
+	if _, e = c.Select("INBOX", nil).Wait(); e != nil {
+		t.Fatal(e)
+	}
+	if e = c.Store(imap.UIDSetNum(1), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close(); e != nil {
+		t.Fatal(e)
+	}
+	sync("INBOX")
+	if e = c.Store(imap.UIDSetNum(1), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); e != nil {
+		t.Fatal(e)
+	}
+	if e = c.UIDExpunge(imap.UIDSetNum(1)).Close(); e != nil {
+		t.Fatal(e)
+	}
+	sync("INBOX")
+
+	// A failed poll keeps the baseline: what changed meanwhile is reported
+	// once the server is reachable again.
+	if e = s.Append("Trash", raw); e != nil {
+		t.Fatal(e)
+	}
+	l, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		t.Fatal(e)
+	}
+	l.Close()
+	p.cfg.redirects["imap.example.test"] = l.Addr().String()
+	if _, e = p.sync(ctx); e == nil {
+		t.Fatal("sync succeeded without a server")
+	}
+	p.cfg.redirects["imap.example.test"] = s.IMAP
+	sync("Trash")
+
+	// New folders are reported; a recreated one is too, by its UIDVALIDITY.
+	if e = s.User.Create("Archive", nil); e != nil {
+		t.Fatal(e)
+	}
+	sync("Archive")
+	if e = s.User.Delete("Archive"); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.User.Create("Archive", nil); e != nil {
+		t.Fatal(e)
+	}
+	sync("Archive")
+	sync()
+}
+
+func TestChangedFoldersCompareModSeq(t *testing.T) {
+	old := map[string]folderState{"INBOX": {validity: 1, next: 5, messages: 4, modseq: 10}, "Sent": {validity: 1, next: 2, messages: 1, modseq: 3}}
+	if changedFolders(nil, old) != nil {
+		t.Fatal("the first sync reported changes")
+	}
+	now := map[string]folderState{"INBOX": old["INBOX"], "Sent": old["Sent"]}
+	starred := now["INBOX"]
+	starred.modseq++
+	now["INBOX"] = starred
+	if got := changedFolders(old, now); len(got) != 1 || got[0] != "INBOX" {
+		t.Fatalf("flag-only change: %v", got)
+	}
+}

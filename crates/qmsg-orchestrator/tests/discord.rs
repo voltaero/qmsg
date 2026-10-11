@@ -946,3 +946,57 @@ async fn queued_send_cancellation_reports_not_sent_without_submission() {
         task.abort();
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn streams_attachment_from_host_blob_and_keeps_display_metadata() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let orchestrator = orchestrator(dir.path()).await;
+    let (provider, mut events) = signed_in(&fake, &orchestrator).await;
+    let bytes = vec![0x61; 700_000]; // More than two SDK read chunks.
+    let blob = provider.add_blob(bytes.clone()).unwrap();
+    let mut media = blob.media(Some("sample.txt".into()), Some("text/plain".into()));
+    media.metadata.spoiler = true;
+    let id = provider
+        .send_message(
+            general(),
+            None,
+            vec![Content::Text("caption".into()), Content::File(media)],
+            Some("media-test".into()),
+        )
+        .await
+        .unwrap();
+    let MessageEvent::Received(message) = message_event(&mut events).await else {
+        panic!("missing media event")
+    };
+    assert_eq!(message.id, id);
+    let Content::File(media) = &message.content[1] else {
+        panic!("missing attachment")
+    };
+    assert_eq!(media.name.as_deref(), Some("SPOILER_sample.txt"));
+    assert_eq!(media.size, Some(bytes.len() as u64));
+    assert_eq!(media.metadata.width, Some(640));
+    assert!(media.metadata.spoiler);
+    assert!(media.metadata.expires_at_ms.is_some());
+    assert_eq!(fake.stat("uploaded_bytes").await, bytes.len() as u64);
+    let fetched = provider.get_message(general(), id).await.unwrap();
+    assert_eq!(fetched.content, message.content);
+    assert!(
+        provider
+            .send_message(
+                general(),
+                None,
+                vec![Content::File(qmsg_types::Media {
+                    name: None,
+                    mime: None,
+                    size: None,
+                    source: qmsg_types::MediaSource::Url("http://127.0.0.1/private".into()),
+                    metadata: Default::default()
+                })],
+                None
+            )
+            .await
+            .is_err()
+    );
+    provider.shutdown().unwrap();
+}

@@ -1,0 +1,1219 @@
+{
+  "$defs": {
+    "ActionKind": {
+      "description": "Standard actions have fixed inputs and results, so one client form works\nwith every provider. Custom actions describe their own.",
+      "oneOf": [
+        {
+          "enum": [
+            "SendMessage",
+            "EditMessage",
+            "DeleteMessage",
+            "OpenChannel",
+            "AddReaction",
+            "RemoveReaction",
+            "Logout"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "MarkRead",
+          "description": "Marks the message, and everything before it, read.",
+          "type": "string"
+        },
+        {
+          "const": "MarkUnread",
+          "description": "Marks the message, and everything after it, unread.",
+          "type": "string"
+        },
+        {
+          "const": "Typing",
+          "description": "Tells the channel the account is typing.",
+          "type": "string"
+        },
+        {
+          "const": "Login",
+          "description": "One login step. Its inputs are the provider's own, such as a\npassword or a code. See [`ProviderStatus::LoginRequired`](crate::ProviderStatus).",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Custom"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ChannelRef": {
+      "description": "Where a channel is: in an organization, or in the provider's standalone\nscope when `organization` is `None`.",
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "organization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "type": "object"
+    },
+    "Choice": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "CompletionItem": {
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value",
+          "description": "The value to use, which can differ from its display label."
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "CompletionPage": {
+      "properties": {
+        "items": {
+          "description": "At most the requested limit. An empty list means no matches.",
+          "items": {
+            "$ref": "#/$defs/CompletionItem"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "Content": {
+      "description": "One part of a [`Message`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Text with styles and mentions. Counts toward the text limit.",
+          "properties": {
+            "Formatted": {
+              "$ref": "#/$defs/FormattedText"
+            }
+          },
+          "required": [
+            "Formatted"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Image": {
+              "$ref": "#/$defs/Media"
+            }
+          },
+          "required": [
+            "Image"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Video": {
+              "$ref": "#/$defs/Media"
+            }
+          },
+          "required": [
+            "Video"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Audio": {
+              "$ref": "#/$defs/Media"
+            }
+          },
+          "required": [
+            "Audio"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "File": {
+              "$ref": "#/$defs/Media"
+            }
+          },
+          "required": [
+            "File"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Anything else the platform has, such as a sticker or a poll, in a\nformat the provider defines.",
+          "properties": {
+            "Custom": {
+              "properties": {
+                "data": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Custom"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Field": {
+      "description": "One field of a [`ValueType::Record`], so clients can show typed results\nand forms without guessing.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "value_type": {
+          "$ref": "#/$defs/ValueType"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "value_type",
+        "required"
+      ],
+      "type": "object"
+    },
+    "FormattedText": {
+      "description": "Text with styled ranges. Ranges can nest and overlap.",
+      "properties": {
+        "spans": {
+          "items": {
+            "$ref": "#/$defs/Span"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "The text as it reads without formatting, including a mention's\ndisplay text, such as `@Ana`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "spans"
+      ],
+      "type": "object"
+    },
+    "Function": {
+      "description": "Available in the requested context. Discovery is a snapshot; providers\nmust still check permissions and inputs when called.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/FunctionInput"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/FunctionKind"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "kind",
+        "inputs"
+      ],
+      "type": "object"
+    },
+    "FunctionInput": {
+      "properties": {
+        "completion": {
+          "description": "Id of a `Completion` function in the same provider. For a list\ninput, it can suggest one item.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "hint": {
+          "$ref": "#/$defs/InputHint"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "value_type": {
+          "$ref": "#/$defs/ValueType"
+        },
+        "verification": {
+          "description": "Id of a `Verification` function in the same provider. For a list\ninput, it can check one item.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "value_type",
+        "required",
+        "hint"
+      ],
+      "type": "object"
+    },
+    "FunctionKind": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Action": {
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/ActionKind"
+                },
+                "result": {
+                  "$ref": "#/$defs/ValueType"
+                }
+              },
+              "required": [
+                "action",
+                "result"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Lookup": {
+              "$ref": "#/$defs/ValueType"
+            }
+          },
+          "required": [
+            "Lookup"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Checks a value of this type.",
+          "properties": {
+            "Verification": {
+              "$ref": "#/$defs/ValueType"
+            }
+          },
+          "required": [
+            "Verification"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Suggests values of this type.",
+          "properties": {
+            "Completion": {
+              "$ref": "#/$defs/ValueType"
+            }
+          },
+          "required": [
+            "Completion"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "HistoryPage": {
+      "description": "Some of a channel's messages, oldest first.",
+      "properties": {
+        "messages": {
+          "description": "At most the requested limit, all in the requested channel.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "For older messages, or `None` at the start of the channel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "type": "object"
+    },
+    "InputHint": {
+      "description": "How a client should show an input.",
+      "oneOf": [
+        {
+          "enum": [
+            "Plain"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Secret",
+          "description": "Hide what is typed, such as a password. Don't keep or log it.",
+          "type": "string"
+        },
+        {
+          "const": "Multiline",
+          "description": "Text that can span lines.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Only one of these values, or for a list, items from them.",
+          "properties": {
+            "Choices": {
+              "items": {
+                "$ref": "#/$defs/Choice"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Choices"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InputIssue": {
+      "properties": {
+        "code": {
+          "description": "Provider-defined stable code; clients display `message`.",
+          "type": "string"
+        },
+        "input": {
+          "description": "`None` means the issue applies to the whole input set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Media": {
+      "description": "A file carried by a [`Content`].",
+      "properties": {
+        "metadata": {
+          "$ref": "#/$defs/MediaMetadata",
+          "default": {
+            "description": null,
+            "duration_ms": null,
+            "expires_at_ms": null,
+            "height": null,
+            "preview_url": null,
+            "spoiler": false,
+            "width": null
+          }
+        },
+        "mime": {
+          "description": "The MIME type, such as `image/png`, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The file name, if the platform has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "The size in bytes, if known. Ignored for [`MediaSource::Bytes`].",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/MediaSource"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "MediaMetadata": {
+      "description": "Hints for displaying media. Unknown values stay absent; URLs can expire.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "preview_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spoiler": {
+          "type": "boolean"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "spoiler"
+      ],
+      "type": "object"
+    },
+    "MediaSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The file itself. The whole message must fit in [`MAX_FRAME`].",
+          "properties": {
+            "Bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Where the file can be downloaded without credentials.",
+          "properties": {
+            "Url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A file held by the side that sent the message: the provider in the\nmessages it emits, the orchestrator in its commands. The other side\nreads it in pieces, so it can be any size. Use it too for files only\nthe provider can download, such as ones behind the platform's login.\n\nA provider's blob stays readable until the orchestrator sends\n[`Command::ReleaseBlob`]. Each id belongs to the one event or reply\nit came in: a provider that returns the same file again, such as in\nhistory, gives it a new id, so releasing one never takes the file from\nanother reader. At most [`MAX_ID`] bytes.",
+          "properties": {
+            "Blob": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Blob"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Mention": {
+      "description": "Who or what a mention points at. Ids are in the channel's scope.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "User": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "User"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Channel": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Channel"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A group of users the platform names, such as a Discord role.",
+          "properties": {
+            "Role": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Role"
+          ],
+          "type": "object"
+        },
+        {
+          "const": "Everyone",
+          "description": "Everyone in the channel, such as `@everyone` or `@channel`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Message": {
+      "description": "A message in a channel.",
+      "properties": {
+        "author": {
+          "description": "The author's [`User`] id, in the channel's scope.",
+          "type": "string"
+        },
+        "channel": {
+          "$ref": "#/$defs/ChannelRef"
+        },
+        "content": {
+          "description": "The parts of the message, in order, such as a caption and its image.",
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "type": "array"
+        },
+        "edited_at": {
+          "description": "When it was last edited, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique within the channel.",
+          "type": "string"
+        },
+        "nonce": {
+          "description": "The client's id for a message the account sent through\n[`Command::Send`], when the provider can tell which send it is. It\nsettles a send whose answer never came.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reactions": {
+          "items": {
+            "$ref": "#/$defs/Reaction"
+          },
+          "type": "array"
+        },
+        "reply_to": {
+          "description": "The id of the message this replies to, in the same channel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sent_at": {
+          "description": "When it was sent, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "channel",
+        "author",
+        "sent_at",
+        "content",
+        "reactions"
+      ],
+      "type": "object"
+    },
+    "Reaction": {
+      "description": "The reactions to a message with one key.",
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "A Unicode emoji such as `👍`, or the provider's id for a custom one.",
+          "type": "string"
+        },
+        "me": {
+          "description": "Whether the account is one of them.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "count",
+        "me"
+      ],
+      "type": "object"
+    },
+    "Span": {
+      "description": "A style over `text[start..end]`, in UTF-8 bytes.",
+      "properties": {
+        "end": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "style": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "style"
+      ],
+      "type": "object"
+    },
+    "Style": {
+      "oneOf": [
+        {
+          "enum": [
+            "Bold",
+            "Italic",
+            "Underline",
+            "Strikethrough",
+            "Code",
+            "Quote",
+            "Spoiler"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "CodeBlock": {
+              "properties": {
+                "language": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "CodeBlock"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Link": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Link"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Mention": {
+              "$ref": "#/$defs/Mention"
+            }
+          },
+          "required": [
+            "Mention"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Value": {
+      "description": "Files can use blobs inside `Content`. Custom records need no new variants.",
+      "oneOf": [
+        {
+          "enum": [
+            "Null"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Boolean": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Boolean"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Integer": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "Integer"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "List": {
+              "items": {
+                "$ref": "#/$defs/Value"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "List"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Record": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Value"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "Record"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Channel": {
+              "$ref": "#/$defs/ChannelRef"
+            }
+          },
+          "required": [
+            "Channel"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Message": {
+              "$ref": "#/$defs/Message"
+            }
+          },
+          "required": [
+            "Message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ValueType": {
+      "oneOf": [
+        {
+          "enum": [
+            "Any",
+            "Null",
+            "Boolean",
+            "Integer",
+            "Text",
+            "Bytes",
+            "Content",
+            "Channel",
+            "Message"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "List": {
+              "$ref": "#/$defs/ValueType"
+            }
+          },
+          "required": [
+            "List"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A record with these fields. Empty takes any record; otherwise fields\nthat aren't listed are refused.",
+          "properties": {
+            "Record": {
+              "items": {
+                "$ref": "#/$defs/Field"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Record"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Verification": {
+      "description": "Invalid input is a normal result. Request failures such as network errors\nor missing permissions use `CommandError` instead.",
+      "oneOf": [
+        {
+          "enum": [
+            "Valid"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Invalid": {
+              "items": {
+                "$ref": "#/$defs/InputIssue"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Invalid"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A provider's answer to a [`Command`].",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Functions": {
+          "items": {
+            "$ref": "#/$defs/Function"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "Functions"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "Value"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Verified": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "Verified"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Completed": {
+          "$ref": "#/$defs/CompletionPage"
+        }
+      },
+      "required": [
+        "Completed"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The id of the message that was sent.",
+      "properties": {
+        "Sent": {
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "Sent"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Opened": {
+          "$ref": "#/$defs/ChannelRef"
+        }
+      },
+      "required": [
+        "Opened"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "History": {
+          "$ref": "#/$defs/HistoryPage"
+        }
+      },
+      "required": [
+        "History"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Message": {
+          "$ref": "#/$defs/Message"
+        }
+      },
+      "required": [
+        "Message"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "Blob": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "Blob"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Reply"
+}

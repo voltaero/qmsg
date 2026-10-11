@@ -17,7 +17,7 @@ use crate::{Content, ContentKind};
 /// A channel can have several rules for a kind, such as small WebP stickers
 /// and larger images of any type. A part follows the first rule for its kind
 /// that takes its MIME type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContentRule {
     pub kind: ContentKind,
     /// For text, the longest all of a message's text parts can be together,
@@ -33,7 +33,9 @@ pub struct ContentRule {
 }
 
 /// How a platform measures text.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum TextUnit {
     /// Unicode scalar values, Rust's `char`s.
     #[default]
@@ -97,7 +99,7 @@ impl ContentRule {
 }
 
 /// Limits on a whole message.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageLimits {
     /// The most media and custom parts in one message.
     pub max_attachments: Option<u32>,
@@ -106,7 +108,7 @@ pub struct MessageLimits {
 }
 
 /// How a message breaks a channel's rules. Parts are numbered from 0.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Violation {
     /// The message has no content.
     Empty,
@@ -299,6 +301,7 @@ mod tests {
             mime: mime.map(str::to_owned),
             size: Some(size),
             source: MediaSource::Url("https://example.com/a".into()),
+            metadata: Default::default(),
         })
     }
 
@@ -518,6 +521,7 @@ mod tests {
             mime: None,
             size: None,
             source: MediaSource::Url("https://example.com/a".into()),
+            metadata: Default::default(),
         }
     }
 }

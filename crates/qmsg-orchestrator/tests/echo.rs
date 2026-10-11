@@ -287,6 +287,7 @@ fn file(name: &str, source: MediaSource) -> Content {
         mime: None,
         size: None,
         source,
+        metadata: Default::default(),
     })
 }
 
@@ -1212,6 +1213,7 @@ async fn sends_the_channel_cannot_take_fail() {
         mime: Some("image/png".into()),
         size: None,
         source: MediaSource::Bytes(vec![0x89, b'P', b'N', b'G']),
+        metadata: Default::default(),
     });
     let two_files = vec![
         file("a", MediaSource::Bytes(vec![1])),
@@ -2209,4 +2211,323 @@ async fn failed_lookups_are_retried() {
     provider.shutdown().unwrap();
     assert_eq!(received(&mut events).await.content, text("goodbye"));
     assert_eq!(exited(&mut events).await, Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn app_grpc_actions_are_idempotent_and_media_belongs_to_each_device() {
+    use qmsg_orchestrator::app::{self, wire};
+    use qmsg_types::Reply;
+    use std::sync::Arc;
+    use wire::{app_client::AppClient, app_server::AppServer};
+    fn auth<T>(body: T, token: &str) -> tonic::Request<T> {
+        let mut r = tonic::Request::new(body);
+        r.metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        r
+    }
+    let port = start_server().await;
+    let (orchestrator, dir) = orchestrator().await;
+    let (tx, events) = mpsc::channel(256);
+    let mut provider = orchestrator.spawn(spec(port), tx.clone()).unwrap();
+    provider.set_timeout(None);
+    let provider = Arc::new(provider);
+    let id = wire::Provider {
+        name: provider.id().name.clone(),
+        instance: provider.id().instance,
+    };
+    let service = app::Service::new(dir.path(), vec![provider.clone()], events).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(AppServer::new(service))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+    );
+    let mut client = AppClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    async fn pair(
+        client: &mut AppClient<tonic::transport::Channel>,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> String {
+        let grant: serde_json::Value =
+            serde_json::from_str(&app::pairing(dir, &Default::default()).unwrap()).unwrap();
+        client
+            .pair(wire::PairRequest {
+                code: grant["code"].as_str().unwrap().into(),
+                device_name: name.into(),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .token
+    }
+    let token = pair(&mut client, dir.path(), "first").await;
+    let second = pair(&mut client, dir.path(), "second").await;
+    timeout(Duration::from_secs(120), async {
+        while provider.status() != ProviderStatus::Ready {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let organization = home(port).organization;
+    tx.send(ProviderEvent::Directory {
+        provider: provider.id().clone(),
+        update: DirectoryUpdate::UserUpserted {
+            organization,
+            user: qmsg_types::User {
+                id: "picture".into(),
+                name: "Profile test".into(),
+                username: Some("profile".into()),
+                avatar: Some(Box::new(Media {
+                    name: None,
+                    mime: Some("image/png".into()),
+                    size: Some(3),
+                    source: MediaSource::Bytes(vec![1, 2, 3]),
+                    metadata: Default::default(),
+                })),
+            },
+        },
+    })
+    .await
+    .unwrap();
+    let avatar = timeout(Duration::from_secs(5), async {
+        loop {
+            let data = client
+                .snapshot(auth(wire::Empty {}, &token))
+                .await
+                .unwrap()
+                .into_inner();
+            let view: serde_json::Value = serde_json::from_str(&data.json).unwrap();
+            if let Some(avatar) =
+                    view["providers"][0]["organizations"][0]["scope"]["users"]["picture"]["avatar"]
+                        ["source"]["Blob"]
+                        .as_str()
+                {
+                    break avatar.to_owned();
+                };
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let other = client
+        .snapshot(auth(wire::Empty {}, &second))
+        .await
+        .unwrap()
+        .into_inner();
+    let other: serde_json::Value = serde_json::from_str(&other.json).unwrap();
+    let other_avatar =
+        other["providers"][0]["organizations"][0]["scope"]["users"]["picture"]["avatar"]["source"]
+            ["Blob"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    assert_ne!(avatar, other_avatar);
+    client
+        .release_blob(auth(wire::ReleaseBlobRequest { id: avatar }, &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .read_blob(auth(
+                wire::ReadBlobRequest {
+                    id: other_avatar,
+                    offset: 0,
+                    length: 3
+                },
+                &second
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .data,
+        vec![1, 2, 3]
+    );
+    let snapshot = client
+        .snapshot(auth(wire::Empty {}, &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let snapshot: serde_json::Value = serde_json::from_str(&snapshot.json).unwrap();
+    let mut stream = client
+        .watch(auth(
+            wire::WatchRequest {
+                epoch: snapshot["epoch"].as_str().unwrap().into(),
+                after_sequence: snapshot["sequence"].as_u64().unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let data = vec![42; 700_000];
+    let chunks: Vec<_> = data
+        .chunks(256 * 1024)
+        .enumerate()
+        .map(|(i, data)| wire::UploadChunk {
+            provider: (i == 0).then(|| id.clone()),
+            name: if i == 0 {
+                "test.bin".into()
+            } else {
+                String::new()
+            },
+            mime: if i == 0 {
+                "application/octet-stream".into()
+            } else {
+                String::new()
+            },
+            size: if i == 0 {
+                data.len() as u64 + (700_000 - data.len()) as u64
+            } else {
+                0
+            },
+            data: data.to_vec(),
+        })
+        .collect();
+    let upload = client
+        .upload(auth(tokio_stream::iter(chunks), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let upload: Media = serde_json::from_str(&upload.json).unwrap();
+    let MediaSource::Blob(upload_id) = &upload.source else {
+        panic!("expected upload handle")
+    };
+    assert!(
+        client
+            .read_blob(auth(
+                wire::ReadBlobRequest {
+                    id: upload_id.clone(),
+                    offset: 0,
+                    length: 16
+                },
+                &second
+            ))
+            .await
+            .is_err()
+    );
+    let command = app::Command::Send {
+        channel: home(port),
+        reply_to: None,
+        content: vec![Content::File(upload)],
+        nonce: None,
+    };
+    let request = wire::ExecuteRequest {
+        provider: Some(id.clone()),
+        command_json: serde_json::to_string(&command).unwrap(),
+        operation_id: "upload-once".into(),
+        created_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        timeout_ms: 60_000,
+    };
+    let result = client
+        .execute(auth(request.clone(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let duplicate = client
+        .execute(auth(request, &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(result.result, duplicate.result);
+    let Some(wire::outcome::Result::Reply(reply)) = result.result else {
+        panic!("send failed")
+    };
+    let Reply::Sent { id: message_id } = serde_json::from_str(&reply.json).unwrap() else {
+        panic!("bad send reply")
+    };
+    let mut delivered = snapshot["sequence"].as_u64().unwrap();
+    timeout(Duration::from_secs(30), async {
+        while delivered < result.observed_sequence {
+            let e = stream.message().await.unwrap().unwrap();
+            if !matches!(e.body, Some(wire::event::Body::Heartbeat(_))) {
+                delivered = e.sequence;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    drop(stream);
+    let command = app::Command::GetMessage {
+        channel: home(port),
+        id: message_id,
+    };
+    let request = wire::ExecuteRequest {
+        provider: Some(id),
+        command_json: serde_json::to_string(&command).unwrap(),
+        ..Default::default()
+    };
+    async fn media_id(
+        client: &mut AppClient<tonic::transport::Channel>,
+        request: wire::ExecuteRequest,
+        token: &str,
+    ) -> String {
+        let outcome = client
+            .execute(auth(request, token))
+            .await
+            .unwrap()
+            .into_inner();
+        let Some(wire::outcome::Result::Reply(data)) = outcome.result else {
+            panic!("fetch failed")
+        };
+        let Reply::Message(message) = serde_json::from_str(&data.json).unwrap() else {
+            panic!("bad reply")
+        };
+        let Content::File(media) = &message.content[0] else {
+            panic!("no file")
+        };
+        let MediaSource::Blob(id) = &media.source else {
+            panic!("no blob")
+        };
+        id.clone()
+    }
+    let first_media = media_id(&mut client, request.clone(), &token).await;
+    let second_media = media_id(&mut client, request, &second).await;
+    assert_ne!(first_media, second_media);
+    client
+        .release_blob(auth(
+            wire::ReleaseBlobRequest {
+                id: first_media.clone(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        client
+            .read_blob(auth(
+                wire::ReadBlobRequest {
+                    id: first_media,
+                    offset: 0,
+                    length: 16
+                },
+                &token
+            ))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .read_blob(auth(
+                wire::ReadBlobRequest {
+                    id: second_media,
+                    offset: 0,
+                    length: 16
+                },
+                &second
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .data,
+        vec![42; 16]
+    );
+    provider.shutdown().unwrap();
+    server.abort();
 }

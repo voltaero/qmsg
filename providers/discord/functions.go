@@ -461,11 +461,11 @@ func (p *provider) trySend(ctx context.Context, ref qmsg.ChannelRef, content []q
 	if !p.canSend(st, ch) {
 		return "", qmsg.ErrForbidden{Reason: "cannot send messages here"}, false
 	}
-	text, err := sendable(content)
+	text, files, err := p.sendParts(ctx, content)
 	if err != nil {
 		return "", err, false
 	}
-	data := api.SendMessageData{Content: text, AllowedMentions: &api.AllowedMentions{Parse: []api.AllowedMentionType{api.AllowUserMention, api.AllowRoleMention, api.AllowEveryoneMention}}}
+	data := api.SendMessageData{Content: text, Files: files, AllowedMentions: &api.AllowedMentions{Parse: []api.AllowedMentionType{api.AllowUserMention, api.AllowRoleMention, api.AllowEveryoneMention}}}
 	if nonce != nil {
 		data.Nonce = *nonce
 	}

@@ -1,0 +1,677 @@
+{
+  "$defs": {
+    "Channel": {
+      "properties": {
+        "accepted_content": {
+          "description": "What can be sent to the channel, and how much. Empty for channels that\ncan't be written to, such as a voice channel without text chat.",
+          "items": {
+            "$ref": "#/$defs/ContentRule"
+          },
+          "type": "array"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Media"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "Unique within the channel's scope.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ChannelKind"
+        },
+        "limits": {
+          "$ref": "#/$defs/MessageLimits"
+        },
+        "members": {
+          "description": "The ids of the users in the channel, or `None` when it is open to its\nwhole organization or the platform doesn't say.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "description": "The channel this one is in, such as a thread's channel or a channel's\ncategory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "description": "Where the channel sorts among its siblings, lowest first.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "accepted_content",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "ChannelKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "Text",
+            "Voice",
+            "Video"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Announcement",
+          "description": "Only some users can post, such as a news channel.",
+          "type": "string"
+        },
+        {
+          "const": "Forum",
+          "description": "Holds threads rather than messages.",
+          "type": "string"
+        },
+        {
+          "const": "Thread",
+          "description": "A conversation branched off another channel, its parent.",
+          "type": "string"
+        },
+        {
+          "const": "Category",
+          "description": "Groups other channels, which name it as their parent.",
+          "type": "string"
+        },
+        {
+          "const": "Direct",
+          "description": "A conversation between two users.",
+          "type": "string"
+        },
+        {
+          "const": "Group",
+          "description": "A conversation between a few users, outside any channel list.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Anything else the platform has, named by the provider.",
+          "properties": {
+            "Custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Custom"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContentKind": {
+      "description": "The kinds of [`Content`], used to say what a [`Channel`] accepts.",
+      "oneOf": [
+        {
+          "enum": [
+            "Text",
+            "Formatted",
+            "Image",
+            "Video",
+            "Audio",
+            "File"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Matches [`Content::Custom`] with the same `kind`.",
+          "properties": {
+            "Custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Custom"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContentRule": {
+      "description": "What a channel takes of one kind of content.\n\nA channel can have several rules for a kind, such as small WebP stickers\nand larger images of any type. A part follows the first rule for its kind\nthat takes its MIME type.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ContentKind"
+        },
+        "max_size": {
+          "description": "For text, the longest all of a message's text parts can be together,\nformatted or not, counted in [`ContentRule::text_unit`]s. Formatted\ntext follows the text rule's limit; its own `max_size` is unused. For anything else, the most\nbytes in each part.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mime_types": {
+          "description": "The MIME types taken for media, such as `image/png`, or `image/*` for\nany image. Empty takes any.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text_unit": {
+          "$ref": "#/$defs/TextUnit",
+          "description": "How text is measured against `max_size`."
+        }
+      },
+      "required": [
+        "kind",
+        "text_unit",
+        "mime_types"
+      ],
+      "type": "object"
+    },
+    "LoginStep": {
+      "description": "One step of logging in. Show the message along with whatever else the\nstep has.",
+      "properties": {
+        "function": {
+          "description": "An [`ActionKind::Login`] function in the provider context to fill in\nand call, such as with a password or a code. The provider reports the\nnext status before answering it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link": {
+          "description": "A page to open in a browser, such as an OAuth login.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "What to tell the user, such as \"Enter the code we texted you\".",
+          "type": "string"
+        },
+        "qr_code": {
+          "description": "Text to show as a QR code for the platform's phone app to scan.\nReported again when it changes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "Media": {
+      "description": "A file carried by a [`Content`].",
+      "properties": {
+        "metadata": {
+          "$ref": "#/$defs/MediaMetadata",
+          "default": {
+            "description": null,
+            "duration_ms": null,
+            "expires_at_ms": null,
+            "height": null,
+            "preview_url": null,
+            "spoiler": false,
+            "width": null
+          }
+        },
+        "mime": {
+          "description": "The MIME type, such as `image/png`, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The file name, if the platform has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "The size in bytes, if known. Ignored for [`MediaSource::Bytes`].",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/MediaSource"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "MediaMetadata": {
+      "description": "Hints for displaying media. Unknown values stay absent; URLs can expire.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "preview_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spoiler": {
+          "type": "boolean"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "spoiler"
+      ],
+      "type": "object"
+    },
+    "MediaSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The file itself. The whole message must fit in [`MAX_FRAME`].",
+          "properties": {
+            "Bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Where the file can be downloaded without credentials.",
+          "properties": {
+            "Url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A file held by the side that sent the message: the provider in the\nmessages it emits, the orchestrator in its commands. The other side\nreads it in pieces, so it can be any size. Use it too for files only\nthe provider can download, such as ones behind the platform's login.\n\nA provider's blob stays readable until the orchestrator sends\n[`Command::ReleaseBlob`]. Each id belongs to the one event or reply\nit came in: a provider that returns the same file again, such as in\nhistory, gives it a new id, so releasing one never takes the file from\nanother reader. At most [`MAX_ID`] bytes.",
+          "properties": {
+            "Blob": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Blob"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MessageLimits": {
+      "description": "Limits on a whole message.",
+      "properties": {
+        "max_attachments": {
+          "description": "The most media and custom parts in one message.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_size": {
+          "description": "The most bytes of media and custom parts in one message, together.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OrganizationEntry": {
+      "description": "An organization as the [`Directory`] keeps it.",
+      "properties": {
+        "icon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Media"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "Presence": {
+      "oneOf": [
+        {
+          "enum": [
+            "Online",
+            "Idle",
+            "Offline"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Busy",
+          "description": "Do not disturb.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProviderId": {
+      "description": "Identifies one spawn, even when providers reuse a name or their events\ncome from different orchestrators in this process. Not a persistent id.",
+      "properties": {
+        "instance": {
+          "description": "Unique across spawns in this process.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The configured name, also used for persistent secrets.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "instance"
+      ],
+      "type": "object"
+    },
+    "ProviderStatus": {
+      "description": "Where a provider is in connecting to its platform. Reported with\n[`ProviderMessage::Status`]; a provider starts as `Connecting`.\n\nA provider reports `Syncing` before its directory snapshot, then `Ready`\nonce it has sent it, along with replays or [`MessageEvent::Gap`]s for\nwhat it missed. Commands sent before `Ready` can fail, such as with\n[`CommandError::LoginRequired`].",
+      "oneOf": [
+        {
+          "enum": [
+            "Connecting",
+            "Syncing",
+            "Ready"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The account must log in; the step says how. Reported again for each\nfollowing step.",
+          "properties": {
+            "LoginRequired": {
+              "$ref": "#/$defs/LoginStep"
+            }
+          },
+          "required": [
+            "LoginRequired"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The connection was lost, and the provider is trying again.",
+          "properties": {
+            "Disconnected": {
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Disconnected"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The provider can't go on without help, such as for a banned account.",
+          "properties": {
+            "Failed": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Failed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProviderView": {
+      "properties": {
+        "organizations": {
+          "items": {
+            "$ref": "#/$defs/OrganizationEntry"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "standalone": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ProviderStatus"
+        }
+      },
+      "required": [
+        "provider",
+        "status",
+        "organizations"
+      ],
+      "type": "object"
+    },
+    "Scope": {
+      "description": "The users and channels in an organization, or outside any.",
+      "properties": {
+        "channels": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Channel"
+          },
+          "type": "object"
+        },
+        "me": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "presence": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Presence"
+          },
+          "type": "object"
+        },
+        "users": {
+          "additionalProperties": {
+            "$ref": "#/$defs/User"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "users",
+        "channels",
+        "presence"
+      ],
+      "type": "object"
+    },
+    "TextUnit": {
+      "description": "How a platform measures text.",
+      "oneOf": [
+        {
+          "const": "Chars",
+          "description": "Unicode scalar values, Rust's `char`s.",
+          "type": "string"
+        },
+        {
+          "const": "Utf16",
+          "description": "UTF-16 code units, as JavaScript counts string length.",
+          "type": "string"
+        },
+        {
+          "const": "Bytes",
+          "description": "UTF-8 bytes.",
+          "type": "string"
+        }
+      ]
+    },
+    "User": {
+      "properties": {
+        "avatar": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Media"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "Unique within the user's scope.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name in this scope.",
+          "type": "string"
+        },
+        "username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "epoch": {
+      "type": "string"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/ProviderView"
+      },
+      "type": "array"
+    },
+    "sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "providers",
+    "epoch",
+    "sequence"
+  ],
+  "title": "Snapshot",
+  "type": "object"
+}

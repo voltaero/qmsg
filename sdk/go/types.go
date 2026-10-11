@@ -113,10 +113,17 @@ func (ContentFile) isContent()      {}
 func (ContentCustom) isContent()    {}
 
 type Media struct {
-	Name   *string
-	Mime   *string
-	Size   *uint64
-	Source MediaSource
+	Name     *string
+	Mime     *string
+	Size     *uint64
+	Source   MediaSource
+	Metadata MediaMetadata
+}
+type MediaMetadata struct {
+	Width, Height           *uint32
+	DurationMs, ExpiresAtMs *uint64
+	PreviewURL, Description *string
+	Spoiler                 bool
 }
 
 type MediaSource interface{ isMediaSource() }
@@ -195,6 +202,7 @@ func (MentionRole) isMention()     {}
 func (MentionEveryone) isMention() {}
 
 type Organization struct {
+	Icon     *Media
 	ID       string
 	Name     string
 	Me       *string
@@ -203,11 +211,15 @@ type Organization struct {
 }
 
 type User struct {
-	ID   string
-	Name string
+	ID       string
+	Name     string
+	Username *string
+	Avatar   *Media
 }
 
 type Channel struct {
+	Topic           *string
+	Icon            *Media
 	ID              string
 	Name            string
 	Kind            ChannelKind
@@ -291,7 +303,10 @@ func (ViolationTotalTooLarge) isViolation()      {}
 type DirectoryUpdate interface{ isDirectoryUpdate() }
 
 type OrganizationUpserted struct{ Organization Organization }
-type OrganizationUpdated struct{ ID, Name string }
+type OrganizationUpdated struct {
+	ID, Name string
+	Icon     *Media
+}
 type OrganizationRemoved struct{ ID string }
 type UserUpserted struct {
 	Organization *string

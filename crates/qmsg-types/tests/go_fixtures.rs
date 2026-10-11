@@ -34,6 +34,15 @@ fn media(source: MediaSource) -> Media {
         mime: some("image/png"),
         size: Some(1 << 40),
         source,
+        metadata: MediaMetadata {
+            width: Some(640),
+            height: Some(480),
+            duration_ms: Some(1234),
+            expires_at_ms: Some(1_700_000_000_000),
+            preview_url: some("https://cdn/preview"),
+            description: some("an image"),
+            spoiler: true,
+        },
     }
 }
 
@@ -76,6 +85,7 @@ fn all_content() -> Vec<Content> {
             mime: None,
             size: None,
             source: MediaSource::Url("https://cdn/v".into()),
+            metadata: Default::default(),
         }),
         Content::Audio(media(MediaSource::Blob("blob-1".into()))),
         Content::File(media(MediaSource::Url("https://cdn/f".into()))),
@@ -264,6 +274,8 @@ fn functions() -> Vec<Function> {
 
 fn channel() -> Channel {
     Channel {
+        topic: None,
+        icon: None,
         id: "c".into(),
         name: "general".into(),
         kind: ChannelKind::Text,
@@ -311,6 +323,8 @@ fn channel_kinds() -> Vec<Channel> {
     ]
     .into_iter()
     .map(|kind| Channel {
+        topic: None,
+        icon: None,
         id: "k".into(),
         name: "k".into(),
         kind,
@@ -657,12 +671,16 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
             users: vec![User {
                 id: "u1".into(),
                 name: "Me".into(),
+                username: None,
+                avatar: None,
             }],
             channels: vec![channel()],
+            icon: None,
         }),
         DirectoryUpdate::OrganizationUpdated {
             id: "g".into(),
             name: "G2".into(),
+            icon: None,
         },
         DirectoryUpdate::OrganizationRemoved { id: "g".into() },
         DirectoryUpdate::UserUpserted {
@@ -670,6 +688,8 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
             user: User {
                 id: "u".into(),
                 name: "U".into(),
+                username: None,
+                avatar: None,
             },
         },
         DirectoryUpdate::UserRemoved {

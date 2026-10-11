@@ -328,18 +328,18 @@ func (p *provider) sync(st *ningen.State) {
 
 func (p *provider) organization(st *ningen.State, g discord.Guild) qmsg.Organization {
 	me := p.me
-	o := qmsg.Organization{ID: g.ID.String(), Name: g.Name, Me: qmsg.Str(me.String())}
+	o := qmsg.Organization{ID: g.ID.String(), Name: g.Name, Icon: publicImage(g.IconURL()), Me: qmsg.Str(me.String())}
 	known := map[discord.UserID]bool{}
 	if members, err := st.Cabinet.Members(g.ID); err == nil {
 		for _, m := range members {
 			known[m.User.ID] = true
-			o.Users = append(o.Users, qmsg.User{ID: m.User.ID.String(), Name: memberName(m)})
+			o.Users = append(o.Users, memberProfile(g.ID, m))
 		}
 	}
 	if !known[me] {
 		known[me] = true
 		if u, err := st.Me(); err == nil {
-			o.Users = append(o.Users, qmsg.User{ID: me.String(), Name: userName(*u)})
+			o.Users = append(o.Users, profile(*u))
 		}
 	}
 	p.mu.Lock()
@@ -372,7 +372,7 @@ func (p *provider) knowUser(org *string, u discord.User) {
 	known[u.ID] = true
 	p.mu.Unlock()
 	if !seen {
-		p.cx.Directory(qmsg.UserUpserted{Organization: org, User: qmsg.User{ID: u.ID.String(), Name: userName(u)}})
+		p.cx.Directory(qmsg.UserUpserted{Organization: org, User: profile(u)})
 	}
 }
 
@@ -433,6 +433,59 @@ func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
 		p.mu.Unlock()
 		p.cx.Status(qmsg.StatusDisconnected{Reason: fmt.Sprintf("gateway closed (%d); reconnecting", ev.Code)})
 	})
+	st.AddHandler(func(ev *gateway.PresenceUpdateEvent) {
+		if !live() {
+			return
+		}
+		switch ev.Status {
+		case discord.OnlineStatus, discord.IdleStatus, discord.DoNotDisturbStatus, discord.OfflineStatus:
+		default:
+			return
+		}
+		if ev.User.Username != "" {
+			p.knowUser(orgOf(ev.GuildID), ev.User)
+		}
+		status := qmsg.Offline
+		switch ev.Status {
+		case discord.OnlineStatus:
+			status = qmsg.Online
+		case discord.IdleStatus:
+			status = qmsg.Idle
+		case discord.DoNotDisturbStatus:
+			status = qmsg.Busy
+		}
+		p.cx.Directory(qmsg.PresenceChanged{Organization: orgOf(ev.GuildID), User: ev.User.ID.String(), Presence: status})
+	})
+	st.AddHandler(func(ev *gateway.UserUpdateEvent) {
+		if !live() {
+			return
+		}
+		p.mu.Lock()
+		var scopes []string
+		for org, users := range p.users {
+			if users[ev.ID] {
+				delete(users, ev.ID)
+				scopes = append(scopes, org)
+			}
+		}
+		p.mu.Unlock()
+		for _, org := range scopes {
+			var scope *string
+			if org != "" {
+				scope = qmsg.Str(org)
+			}
+			p.knowUser(scope, ev.User)
+		}
+	})
+	st.AddHandler(func(ev *gateway.GuildMemberUpdateEvent) {
+		if !live() {
+			return
+		}
+		org := ev.GuildID.String()
+		u := memberProfile(ev.GuildID, discord.Member{User: ev.User, Nick: ev.Nick, Avatar: ev.Avatar})
+		p.cx.Directory(qmsg.UserUpserted{Organization: &org, User: u})
+	})
+
 	st.AddHandler(func(ev *gateway.MessageCreateEvent) {
 		if !live() {
 			return
@@ -519,7 +572,7 @@ func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
 	})
 	st.AddHandler(func(ev *gateway.GuildUpdateEvent) {
 		if live() {
-			p.cx.Directory(qmsg.OrganizationUpdated{ID: ev.ID.String(), Name: ev.Name})
+			p.cx.Directory(qmsg.OrganizationUpdated{ID: ev.ID.String(), Name: ev.Name, Icon: publicImage(ev.Guild.IconURL())})
 		}
 	})
 	st.AddHandler(func(ev *gateway.GuildDeleteEvent) {
@@ -560,7 +613,7 @@ func commandError(err error, unknown qmsg.CommandError) qmsg.CommandError {
 		return ce
 	}
 	if errors.Is(err, context.Canceled) {
-		return qmsg.ErrCancelled{}
+		return qmsg.ErrProvider{Code: "request_cancelled", Message: "request cancelled after submission; delivery may be unknown"}
 	}
 	var h *httputil.HTTPError
 	if errors.As(err, &h) {

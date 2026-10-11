@@ -20,6 +20,18 @@ data_dir = ".qmsg"
 # port = 7300
 # viewer_url = "https://qmsg.example.com/browser"
 
+# Native app gRPC endpoint. Plain HTTP is allowed only on localhost, for
+# a local app or a secure tunnel that forwards this port.
+[app]
+listen = "127.0.0.1:50051"
+# endpoint = "http://localhost:50051" # Address as seen by the paired app.
+# For direct LAN access, create an identity with:
+# cargo run -p qmsg-orchestrator -- tls .qmsg qmsg.local 192.168.1.10
+# listen = "0.0.0.0:50051"
+# endpoint = "https://qmsg.local:50051"
+# certificate = ".qmsg/app-cert.pem"
+# private_key = ".qmsg/app-key.pem"
+
 [[provider]]
 name = "echo"
 wasm = "target/wasm32-wasip2/debug/qmsg_provider_echo.wasm"

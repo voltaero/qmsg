@@ -1,25 +1,19 @@
-use std::path::PathBuf;
-
 use anyhow::Context as _;
-use qmsg_orchestrator::{
-    BrowserConfig, Directory, Encryption, Orchestrator, ProviderEvent, ProviderSpec,
-};
-use qmsg_types::{Content, DirectoryUpdate, MessageEvent};
+use qmsg_orchestrator::{BrowserConfig, Encryption, Orchestrator, ProviderSpec, app};
 use serde::Deserialize;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
-
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
-    /// Where secrets are kept. Defaults to `~/.qmsg`; relative paths are from
-    /// the current directory.
     data_dir: Option<PathBuf>,
-    /// The browser login service, started on the first browser login.
     #[serde(default)]
     browser: BrowserConfig,
+    #[serde(default)]
+    app: app::Config,
     #[serde(default, rename = "provider")]
     providers: Vec<ProviderSpec>,
 }
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -27,124 +21,72 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-
-    let path = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "orchestrator.toml".into()),
-    );
+    let mut args = std::env::args().skip(1);
+    let first = args.next().unwrap_or_else(|| "orchestrator.toml".into());
+    if first == "schema" {
+        println!("{}", serde_json::to_string_pretty(&app::schema())?);
+        return Ok(());
+    }
+    if first == "tls" {
+        let dir = PathBuf::from(
+            args.next()
+                .context("usage: qmsg-orchestrator tls DATA_DIR HOST [HOST...]")?,
+        );
+        let hosts: Vec<_> = args.collect();
+        anyhow::ensure!(!hosts.is_empty(), "supply server host names or LAN IPs");
+        let (cert, key) = app::create_identity(&dir, hosts)?;
+        println!("certificate = {:?}\nprivate_key = {:?}", cert, key);
+        return Ok(());
+    }
+    let pair = first == "pair";
+    let path = PathBuf::from(if pair {
+        args.next().unwrap_or_else(|| "orchestrator.toml".into())
+    } else {
+        first
+    });
     let config: Config = toml::from_str(
         &tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("reading {}", path.display()))?,
     )?;
-
     let data_dir = match config.data_dir {
         Some(dir) => dir,
         None => std::env::home_dir()
-            .context("no home directory, set `data_dir` in the config")?
+            .context("set data_dir: no home directory")?
             .join(".qmsg"),
     };
+    let json_only = args.any(|arg| arg == "--json");
+    if pair {
+        let value = app::pairing(&data_dir, &config.app)?;
+        if !json_only {
+            let qr = qrcode::QrCode::new(value.as_bytes())?;
+            println!(
+                "{}",
+                qr.render::<qrcode::render::unicode::Dense1x2>()
+                    .quiet_zone(true)
+                    .build()
+            );
+        }
+        println!("{value}");
+        return Ok(());
+    }
+    config.app.validate()?;
     let mut orchestrator = Orchestrator::new(&data_dir, Encryption::Keychain).await?;
     orchestrator.set_browser(config.browser);
-    let (events_tx, mut events) = mpsc::channel(256);
-    let mut handles = Vec::new();
+    let (tx, events) = mpsc::channel(256);
+    let mut providers = Vec::new();
     for spec in config.providers {
-        handles.push(orchestrator.spawn(spec, events_tx.clone())?);
+        let mut p = orchestrator.spawn(spec, tx.clone())?;
+        p.set_timeout(None);
+        providers.push(Arc::new(p));
     }
-    drop(events_tx);
-
-    let mut directory = Directory::new();
-    let mut running = handles.len();
-    let mut shutting_down = false;
-    while running > 0 {
-        tokio::select! {
-            Some(event) = events.recv() => match event {
-                ProviderEvent::Message { provider, event } => match event {
-                    MessageEvent::Received(message) => {
-                        let author = directory
-                            .author(&provider, &message)
-                            .map_or(message.author.as_str(), |u| u.name.as_str());
-                        tracing::info!(
-                            provider = ?provider,
-                            organization = message.channel.organization.as_deref().unwrap_or("-"),
-                            channel = message.channel.channel,
-                            id = message.id,
-                            author,
-                            "{}",
-                            describe(&message.content),
-                        );
-                    }
-                    MessageEvent::Edited { channel, id, content, .. } => {
-                        tracing::info!(provider = ?provider, channel = channel.channel, id, "edited: {}", describe(&content));
-                    }
-                    MessageEvent::Deleted { channel, id } => {
-                        tracing::info!(provider = ?provider, channel = channel.channel, id, "deleted");
-                    }
-                    other => tracing::debug!(provider = ?provider, "{other:?}"),
-                },
-                ProviderEvent::Status { provider, status } => {
-                    tracing::info!(provider = ?provider, "{status:?}");
-                }
-                ProviderEvent::Directory { provider, update } => {
-                    if let DirectoryUpdate::OrganizationUpserted(organization) = &update {
-                        tracing::info!(
-                            provider = ?provider,
-                            organization = organization.id,
-                            users = organization.users.len(),
-                            channels = organization.channels.len(),
-                            "joined {}",
-                            organization.name,
-                        );
-                    } else {
-                        tracing::debug!(provider = ?provider, "{update:?}");
-                    }
-                    if let Err(e) = directory.apply(&provider, update) {
-                        tracing::warn!(provider = ?provider, "ignored directory update: {e}");
-                    }
-                }
-                ProviderEvent::Exited { provider, result } => {
-                    running -= 1;
-                    directory.remove_provider(&provider);
-                    match result {
-                        Ok(()) => tracing::info!(provider = ?provider, "exited"),
-                        Err(e) => tracing::error!(provider = ?provider, "exited: {e}"),
-                    }
-                }
-            },
-            _ = tokio::signal::ctrl_c() => {
-                if shutting_down {
-                    // Keep draining so killed providers can send `Exited`.
-                    tracing::warn!("killing providers");
-                    for handle in &handles {
-                        handle.kill();
-                    }
-                    continue;
-                }
-                tracing::info!("shutting down, press Ctrl-C again to kill");
-                shutting_down = true;
-                for handle in &handles {
-                    let _ = handle.shutdown();
-                }
-            }
-        }
+    drop(tx);
+    let service = app::Service::new(&data_dir, providers.clone(), events)?;
+    tokio::select! {result=service.serve(config.app)=>result?,_ = tokio::signal::ctrl_c()=>{tracing::info!("shutting down");}}
+    for provider in providers {
+        let _ = provider.shutdown();
     }
+    // Provider shutdown is bounded by the host's own runtime limits.
+    drop(orchestrator);
     Ok(())
-}
-
-/// Message content as one line, with attachments in brackets.
-fn describe(content: &[Content]) -> String {
-    let parts: Vec<String> = content
-        .iter()
-        .map(|part| match part {
-            Content::Text(text) => text.clone(),
-            Content::Formatted(formatted) => formatted.text.clone(),
-            Content::Image(_) => "[image]".into(),
-            Content::Video(_) => "[video]".into(),
-            Content::Audio(_) => "[audio]".into(),
-            Content::File(_) => "[file]".into(),
-            Content::Custom { kind, .. } => format!("[{kind}]"),
-        })
-        .collect();
-    parts.join(" ")
 }

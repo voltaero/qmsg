@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 pub type Arguments = BTreeMap<String, Value>;
 
 /// Files can use blobs inside `Content`. Custom records need no new variants.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -21,7 +21,7 @@ pub enum Value {
     Message(Message),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ValueType {
     Any,
     Null,
@@ -40,7 +40,7 @@ pub enum ValueType {
 
 /// One field of a [`ValueType::Record`], so clients can show typed results
 /// and forms without guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Field {
     pub id: String,
     pub label: String,
@@ -102,7 +102,7 @@ impl ValueType {
 
 /// Providers must check scope, existence and permissions. A message names
 /// its channel, so it cannot name a conflicting organization.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum FunctionContext {
     #[default]
     Provider,
@@ -130,7 +130,7 @@ pub mod inputs {
 
 /// Standard actions have fixed inputs and results, so one client form works
 /// with every provider. Custom actions describe their own.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ActionKind {
     SendMessage,
     EditMessage,
@@ -235,7 +235,7 @@ impl ActionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum FunctionKind {
     Action {
         action: ActionKind,
@@ -249,7 +249,7 @@ pub enum FunctionKind {
 }
 
 /// How a client should show an input.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum InputHint {
     #[default]
     Plain,
@@ -261,13 +261,13 @@ pub enum InputHint {
     Choices(Vec<Choice>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Choice {
     pub label: String,
     pub value: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FunctionInput {
     pub id: String,
     pub label: String,
@@ -312,7 +312,7 @@ impl FunctionInput {
 
 /// Available in the requested context. Discovery is a snapshot; providers
 /// must still check permissions and inputs when called.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Function {
     pub id: String,
     pub label: String,
@@ -496,7 +496,7 @@ fn check_contract(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FunctionCall {
     pub function: String,
     pub context: FunctionContext,
@@ -505,7 +505,7 @@ pub struct FunctionCall {
 
 /// Identifies an input on its parent action/lookup. Helper functions can be
 /// shared by several functions without losing which input requested them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FunctionInputRef {
     pub function: String,
     pub input: String,
@@ -514,7 +514,7 @@ pub struct FunctionInputRef {
 /// `call.arguments` holds other inputs, which can still be incomplete.
 /// `input` names the target input, or is `None` for a standalone check.
 /// Verification must not carry out the action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VerificationRequest {
     pub call: FunctionCall,
     pub input: Option<FunctionInputRef>,
@@ -523,7 +523,7 @@ pub struct VerificationRequest {
 
 /// Completion must not carry out actions. Cursors are opaque; use the same
 /// context, arguments, input and query for subsequent pages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompletionRequest {
     pub call: FunctionCall,
     pub input: Option<FunctionInputRef>,
@@ -532,7 +532,7 @@ pub struct CompletionRequest {
     pub limit: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputIssue {
     /// `None` means the issue applies to the whole input set.
     pub input: Option<String>,
@@ -543,13 +543,13 @@ pub struct InputIssue {
 
 /// Invalid input is a normal result. Request failures such as network errors
 /// or missing permissions use `CommandError` instead.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Verification {
     Valid,
     Invalid(Vec<InputIssue>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompletionItem {
     pub label: String,
     pub description: Option<String>,
@@ -557,7 +557,7 @@ pub struct CompletionItem {
     pub value: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompletionPage {
     /// At most the requested limit. An empty list means no matches.
     pub items: Vec<CompletionItem>,

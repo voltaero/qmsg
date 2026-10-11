@@ -22,15 +22,16 @@ struct Entry {
 }
 
 /// An organization as the [`Directory`] keeps it.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct OrganizationEntry {
     pub id: String,
     pub name: String,
+    pub icon: Option<Box<qmsg_types::Media>>,
     pub scope: Scope,
 }
 
 /// The users and channels in an organization, or outside any.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Scope {
     me: Option<String>,
     users: BTreeMap<String, User>,
@@ -65,6 +66,12 @@ impl Scope {
     /// The user's presence, if the provider reported one.
     pub fn presence(&self, user: &str) -> Option<Presence> {
         self.presence.get(user).copied()
+    }
+
+    pub fn presences(&self) -> impl Iterator<Item = (&str, Presence)> {
+        self.presence
+            .iter()
+            .map(|(id, presence)| (id.as_str(), *presence))
     }
 
     fn is_empty(&self) -> bool {
@@ -179,6 +186,7 @@ impl Entry {
                 let Organization {
                     id,
                     name,
+                    icon,
                     me,
                     users,
                     channels,
@@ -189,12 +197,22 @@ impl Entry {
                     channels: channels.into_iter().map(|c| (c.id.clone(), c)).collect(),
                     presence: BTreeMap::new(),
                 };
-                self.organizations
-                    .insert(id.clone(), OrganizationEntry { id, name, scope });
+                self.organizations.insert(
+                    id.clone(),
+                    OrganizationEntry {
+                        id,
+                        name,
+                        icon,
+                        scope,
+                    },
+                );
             }
-            DirectoryUpdate::OrganizationUpdated { id, name } => {
+            DirectoryUpdate::OrganizationUpdated { id, name, icon } => {
                 match self.organizations.get_mut(&id) {
-                    Some(organization) => organization.name = name,
+                    Some(organization) => {
+                        organization.name = name;
+                        organization.icon = icon;
+                    }
                     None => return Err(ApplyError::UnknownOrganization(id)),
                 }
             }
@@ -281,6 +299,8 @@ mod tests {
         User {
             id: id.into(),
             name: name.into(),
+            username: None,
+            avatar: None,
         }
     }
 
@@ -295,6 +315,7 @@ mod tests {
             me: Some("ana".into()),
             users: vec![user("ana", "Ana")],
             channels: vec![channel("general", ChannelKind::Text)],
+            icon: None,
         }
     }
 
@@ -367,6 +388,7 @@ mod tests {
             DirectoryUpdate::OrganizationUpdated {
                 id: "org".into(),
                 name: "Renamed".into(),
+                icon: None,
             },
         )
         .unwrap();
@@ -379,6 +401,7 @@ mod tests {
                 DirectoryUpdate::OrganizationUpdated {
                     id: "nope".into(),
                     name: "x".into(),
+                    icon: None,
                 },
             ),
             Err(ApplyError::UnknownOrganization("nope".into()))

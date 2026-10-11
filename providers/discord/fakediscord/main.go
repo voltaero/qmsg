@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -57,15 +58,16 @@ const (
 )
 
 type msg struct {
-	ID        string  `json:"id"`
-	ChannelID string  `json:"channel_id"`
-	GuildID   string  `json:"guild_id,omitempty"`
-	Author    any     `json:"author"`
-	Content   string  `json:"content"`
-	Timestamp string  `json:"timestamp"`
-	Edited    *string `json:"edited_timestamp"`
-	Type      int     `json:"type"`
-	Nonce     string  `json:"nonce,omitempty"`
+	ID          string           `json:"id"`
+	ChannelID   string           `json:"channel_id"`
+	GuildID     string           `json:"guild_id,omitempty"`
+	Author      any              `json:"author"`
+	Content     string           `json:"content"`
+	Timestamp   string           `json:"timestamp"`
+	Edited      *string          `json:"edited_timestamp"`
+	Type        int              `json:"type"`
+	Nonce       string           `json:"nonce,omitempty"`
+	Attachments []map[string]any `json:"attachments,omitempty"`
 }
 
 func user(id, name string) map[string]any {
@@ -327,12 +329,48 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 				reply(w, 403, apiError{"Missing Permissions", 50013})
 				return
 			}
+
 			var body struct {
 				Content string `json:"content"`
 				Nonce   string `json:"nonce"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
-			m := &msg{ID: s.id(), ChannelID: ch, GuildID: guildOf(ch), Author: user(meID, "tester"), Content: body.Content, Timestamp: now(), Nonce: body.Nonce}
+			var attachments []map[string]any
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+				reader, err := r.MultipartReader()
+				if err != nil {
+					reply(w, 400, apiError{"bad multipart", 0})
+					return
+				}
+				for {
+					part, err := reader.NextPart()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						reply(w, 400, apiError{"bad multipart", 0})
+						return
+					}
+					data, err := io.ReadAll(io.LimitReader(part, 10*1024*1024+1))
+					if err != nil || len(data) > 10*1024*1024 {
+						reply(w, 400, apiError{"bad upload", 0})
+						return
+					}
+					if part.FormName() == "payload_json" {
+						if json.Unmarshal(data, &body) != nil {
+							reply(w, 400, apiError{"bad payload", 0})
+							return
+						}
+					} else {
+						s.stats["uploaded_bytes"] += len(data)
+						attachments = append(attachments, map[string]any{"id": s.id(), "filename": part.FileName(), "size": len(data), "content_type": http.DetectContentType(data), "url": "https://cdn.discordapp.com/attachments/test/file?ex=ffffffff", "width": 640, "height": 480})
+					}
+				}
+			} else if json.NewDecoder(r.Body).Decode(&body) != nil {
+				reply(w, 400, apiError{"bad JSON", 0})
+				return
+			}
+			m := &msg{ID: s.id(), ChannelID: ch, GuildID: guildOf(ch), Author: user(meID, "tester"), Content: body.Content, Timestamp: now(), Nonce: body.Nonce, Attachments: attachments}
+
 			s.messages[ch] = append(s.messages[ch], m)
 			s.stats["accepted"]++
 			s.dispatchLater("MESSAGE_CREATE", m)

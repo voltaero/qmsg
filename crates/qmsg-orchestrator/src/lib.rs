@@ -166,7 +166,9 @@ pub struct ProviderSpec {
 
 /// Identifies one spawn, even when providers reuse a name or their events
 /// come from different orchestrators in this process. Not a persistent id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct ProviderId {
     /// The configured name, also used for persistent secrets.
     pub name: String,
@@ -179,7 +181,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Something a provider instance did. `Exited` is its last event. There is
 /// no ordering between instances, including ones that reuse a name.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum ProviderEvent {
     Message {
         provider: ProviderId,
@@ -1690,6 +1692,7 @@ mod tests {
             mime: None,
             size: None,
             source: MediaSource::Blob(blob.into()),
+            metadata: Default::default(),
         })
     }
 
@@ -2579,3 +2582,5 @@ mod tests {
         assert_eq!(released, [over(), over()]);
     }
 }
+
+pub mod app;

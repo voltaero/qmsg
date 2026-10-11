@@ -153,6 +153,19 @@ func (e *encoder) media(m Media) {
 	default:
 		panic(bad("media source", s))
 	}
+	e.optU32(m.Metadata.Width)
+	e.optU32(m.Metadata.Height)
+	e.optU64(m.Metadata.DurationMs)
+	e.optU64(m.Metadata.ExpiresAtMs)
+	e.optStr(m.Metadata.PreviewURL)
+	e.optStr(m.Metadata.Description)
+	e.boolean(m.Metadata.Spoiler)
+}
+func (e *encoder) optMedia(m *Media) {
+	e.boolean(m != nil)
+	if m != nil {
+		e.media(*m)
+	}
 }
 
 func (e *encoder) contentKind(k ContentKind) {
@@ -216,11 +229,18 @@ func (e *encoder) style(s Style) {
 	}
 }
 
-func (e *encoder) user(u User) { e.str(u.ID); e.str(u.Name) }
+func (e *encoder) user(u User) {
+	e.str(u.ID)
+	e.str(u.Name)
+	e.optStr(u.Username)
+	e.optMedia(u.Avatar)
+}
 
 func (e *encoder) channel(c Channel) {
 	e.str(c.ID)
 	e.str(c.Name)
+	e.optStr(c.Topic)
+	e.optMedia(c.Icon)
 	e.tag(uint32(c.Kind.Tag))
 	if c.Kind.Tag == ChannelCustom {
 		e.str(c.Kind.Custom)
@@ -251,6 +271,7 @@ func (e *encoder) channel(c Channel) {
 func (e *encoder) organization(o Organization) {
 	e.str(o.ID)
 	e.str(o.Name)
+	e.optMedia(o.Icon)
 	e.optStr(o.Me)
 	e.varint(uint64(len(o.Users)))
 	for _, u := range o.Users {
@@ -308,6 +329,7 @@ func (e *encoder) directoryUpdate(u DirectoryUpdate) {
 		e.tag(1)
 		e.str(u.ID)
 		e.str(u.Name)
+		e.optMedia(u.Icon)
 	case OrganizationRemoved:
 		e.tag(2)
 		e.str(u.ID)
@@ -938,7 +960,16 @@ func (d *decoder) media() Media {
 	default:
 		d.badTag("MediaSource", t)
 	}
+	m.Metadata = MediaMetadata{d.optU32(), d.optU32(), d.optU64(), d.optU64(), d.optStr(), d.optStr(), d.boolean()}
 	return m
+}
+
+func (d *decoder) optMedia() *Media {
+	if d.option() {
+		m := d.media()
+		return &m
+	}
+	return nil
 }
 
 func (d *decoder) contentKind() ContentKind {
@@ -995,10 +1026,12 @@ func (d *decoder) style() Style {
 	return nil
 }
 
-func (d *decoder) user() User { return User{d.str(), d.str()} }
+func (d *decoder) user() User {
+	return User{ID: d.str(), Name: d.str(), Username: d.optStr(), Avatar: d.optMedia()}
+}
 
 func (d *decoder) channel() Channel {
-	c := Channel{ID: d.str(), Name: d.str()}
+	c := Channel{ID: d.str(), Name: d.str(), Topic: d.optStr(), Icon: d.optMedia()}
 	c.Kind.Tag = ChannelKindTag(d.tag())
 	switch {
 	case c.Kind.Tag == ChannelCustom:
@@ -1025,7 +1058,7 @@ func (d *decoder) channel() Channel {
 }
 
 func (d *decoder) organization() Organization {
-	return Organization{d.str(), d.str(), d.optStr(), seq(d, d.user), seq(d, d.channel)}
+	return Organization{ID: d.str(), Name: d.str(), Icon: d.optMedia(), Me: d.optStr(), Users: seq(d, d.user), Channels: seq(d, d.channel)}
 }
 
 func (d *decoder) violation() Violation {
@@ -1057,7 +1090,7 @@ func (d *decoder) directoryUpdate() DirectoryUpdate {
 	case 0:
 		return OrganizationUpserted{d.organization()}
 	case 1:
-		return OrganizationUpdated{d.str(), d.str()}
+		return OrganizationUpdated{d.str(), d.str(), d.optMedia()}
 	case 2:
 		return OrganizationRemoved{d.str()}
 	case 3:

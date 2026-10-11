@@ -16,7 +16,7 @@ func guildChannel() ChannelRef { return ChannelRef{Str("g"), "c"} }
 func dmRef() ChannelRef        { return ChannelRef{nil, "dm"} }
 
 func fixMedia(s MediaSource) Media {
-	return Media{Str("a.png"), Str("image/png"), U64(1 << 40), s}
+	return Media{Name: Str("a.png"), Mime: Str("image/png"), Size: U64(1 << 40), Source: s, Metadata: MediaMetadata{Width: U32(640), Height: U32(480), DurationMs: U64(1234), ExpiresAtMs: U64(1_700_000_000_000), PreviewURL: Str("https://cdn/preview"), Description: Str("an image"), Spoiler: true}}
 }
 
 func allContent() []Content {
@@ -177,10 +177,10 @@ func fixtures() map[string]any {
 	f["secret_set"] = PmSecretSet{"k", bytes.Repeat([]byte{1}, 200)}
 	f["secret_delete"] = PmSecretDelete{"k"}
 	updates := []DirectoryUpdate{
-		OrganizationUpserted{Organization{"g", "Guild", Str("u1"), []User{{"u1", "Me"}}, []Channel{fixChannel()}}},
-		OrganizationUpdated{"g", "G2"},
+		OrganizationUpserted{Organization{ID: "g", Name: "Guild", Me: Str("u1"), Users: []User{{ID: "u1", Name: "Me"}}, Channels: []Channel{fixChannel()}}},
+		OrganizationUpdated{ID: "g", Name: "G2"},
 		OrganizationRemoved{"g"},
-		UserUpserted{nil, User{"u", "U"}},
+		UserUpserted{nil, User{ID: "u", Name: "U"}},
 		UserRemoved{Str("g"), "u"},
 		ChannelRemoved{guildChannel()},
 		Me{nil, Str("u1")},

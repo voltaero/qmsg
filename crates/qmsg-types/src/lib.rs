@@ -40,7 +40,7 @@ pub use limits::{ContentRule, MessageLimits, TextUnit, Violation, check};
 pub const ABI_VERSION: u32 = 3;
 
 /// Passed to a provider when it starts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProviderConfig {
     pub name: String,
     /// WebSocket URL the provider connects to for talking to the orchestrator.
@@ -70,7 +70,9 @@ pub const MAX_ID: usize = 1024;
 
 /// Where a channel is: in an organization, or in the provider's standalone
 /// scope when `organization` is `None`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct ChannelRef {
     pub organization: Option<String>,
     pub channel: String,
@@ -86,7 +88,7 @@ impl ChannelRef {
 }
 
 /// A message in a channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Message {
     /// Unique within the channel.
     pub id: String,
@@ -136,7 +138,7 @@ impl Message {
 /// Events can repeat, such as when history overlaps live messages or a
 /// provider replays what it missed. Clients keep messages by channel and id:
 /// a [`MessageEvent::Received`] for a known id replaces it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum MessageEvent {
     /// A new message, including ones the account sent itself.
     Received(Message),
@@ -197,7 +199,7 @@ impl From<Message> for MessageEvent {
 }
 
 /// One part of a [`Message`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Content {
     Text(String),
     /// Text with styles and mentions. Counts toward the text limit.
@@ -229,7 +231,7 @@ impl Content {
 }
 
 /// A file carried by a [`Content`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Media {
     /// The file name, if the platform has one.
     pub name: Option<String>,
@@ -238,6 +240,20 @@ pub struct Media {
     /// The size in bytes, if known. Ignored for [`MediaSource::Bytes`].
     pub size: Option<u64>,
     pub source: MediaSource,
+    #[serde(default)]
+    pub metadata: MediaMetadata,
+}
+
+/// Hints for displaying media. Unknown values stay absent; URLs can expire.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MediaMetadata {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+    pub preview_url: Option<String>,
+    pub description: Option<String>,
+    pub spoiler: bool,
 }
 
 impl Media {
@@ -250,7 +266,7 @@ impl Media {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum MediaSource {
     /// The file itself. The whole message must fit in [`MAX_FRAME`].
     Bytes(Vec<u8>),
@@ -270,7 +286,9 @@ pub enum MediaSource {
 }
 
 /// The kinds of [`Content`], used to say what a [`Channel`] accepts.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum ContentKind {
     Text,
     Formatted,
@@ -298,11 +316,12 @@ impl ContentKind {
 }
 
 /// A group on a platform, such as a Discord server or a Slack workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Organization {
     /// Unique within the provider.
     pub id: String,
     pub name: String,
+    pub icon: Option<Box<Media>>,
     /// The account's own user id in the organization, if it has one.
     pub me: Option<String>,
     /// Can be partial, such as when the platform sends large member lists in
@@ -311,18 +330,23 @@ pub struct Organization {
     pub channels: Vec<Channel>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct User {
     /// Unique within the user's scope.
     pub id: String,
+    /// Display name in this scope.
     pub name: String,
+    pub username: Option<String>,
+    pub avatar: Option<Box<Media>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Channel {
     /// Unique within the channel's scope.
     pub id: String,
     pub name: String,
+    pub topic: Option<String>,
+    pub icon: Option<Box<Media>>,
     pub kind: ChannelKind,
     /// The channel this one is in, such as a thread's channel or a channel's
     /// category.
@@ -344,6 +368,8 @@ impl Channel {
         Self {
             id: id.into(),
             name: name.into(),
+            topic: None,
+            icon: None,
             kind,
             parent: None,
             position: None,
@@ -370,7 +396,7 @@ impl Channel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ChannelKind {
     Text,
     Voice,
@@ -395,7 +421,7 @@ pub enum ChannelKind {
 ///
 /// Upserts add the item, or replace the one with the same id. Removals of
 /// items that aren't there are not an error for the provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum DirectoryUpdate {
     /// Adds an organization, or replaces it along with its users and channels.
     OrganizationUpserted(Organization),
@@ -403,6 +429,7 @@ pub enum DirectoryUpdate {
     OrganizationUpdated {
         id: String,
         name: String,
+        icon: Option<Box<Media>>,
     },
     /// The account left the organization, or it was deleted.
     OrganizationRemoved {
@@ -439,7 +466,7 @@ pub enum DirectoryUpdate {
     Reset,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Presence {
     Online,
     Idle,
@@ -455,7 +482,7 @@ pub enum Presence {
 /// once it has sent it, along with replays or [`MessageEvent::Gap`]s for
 /// what it missed. Commands sent before `Ready` can fail, such as with
 /// [`CommandError::LoginRequired`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ProviderStatus {
     Connecting,
     /// The account must log in; the step says how. Reported again for each
@@ -473,7 +500,7 @@ pub enum ProviderStatus {
 
 /// One step of logging in. Show the message along with whatever else the
 /// step has.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LoginStep {
     /// What to tell the user, such as "Enter the code we texted you".
     pub message: String,
@@ -493,7 +520,7 @@ pub struct LoginStep {
 /// The provider answers each command but `ReleaseBlob` and `Shutdown` with a
 /// [`ProviderMessage::Reply`] carrying the command's `request`, which the
 /// orchestrator chooses.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Command {
     /// Lists the functions currently available in this context.
     Functions {
@@ -598,7 +625,7 @@ impl Command {
 }
 
 /// Some of a channel's messages, oldest first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HistoryPage {
     /// At most the requested limit, all in the requested channel.
     pub messages: Vec<Message>,
@@ -607,7 +634,7 @@ pub struct HistoryPage {
 }
 
 /// A provider's answer to a [`Command`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Reply {
     Functions(Vec<Function>),
     Value(Value),
@@ -624,7 +651,7 @@ pub enum Reply {
 }
 
 /// Why a provider couldn't carry out a [`Command`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum CommandError {
     /// The provider or platform can't do this.
     Unsupported,
@@ -706,7 +733,7 @@ impl From<Violation> for CommandError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum LogLevel {
     Error,
     Warn,
@@ -716,7 +743,7 @@ pub enum LogLevel {
 }
 
 /// Sent from a provider to the orchestrator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ProviderMessage {
     Log {
         level: LogLevel,
@@ -783,7 +810,7 @@ pub enum ProviderMessage {
 }
 
 /// Sent from the orchestrator to a provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum HostMessage {
     Command(Command),
     /// The answer to a [`ProviderMessage::SecretGet`]. Fails when the

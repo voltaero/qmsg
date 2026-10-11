@@ -54,6 +54,7 @@ type Context struct {
 	// Browser logins waiting for their answer, by request.
 	logins    map[uint64]chan HmBrowserLogin
 	nextLogin uint64
+	blobReads map[blobReadKey]chan HmBlob
 }
 
 // Connect connects to the orchestrator named in config. The `run` export
@@ -225,6 +226,14 @@ func (cx *Context) read() error {
 			cx.mu.Lock()
 			if ch, ok := cx.logins[m.Request]; ok {
 				delete(cx.logins, m.Request)
+				ch <- m
+			}
+			cx.mu.Unlock()
+		case HmBlob:
+			cx.mu.Lock()
+			key := blobReadKey{m.Blob, m.Offset}
+			if ch, ok := cx.blobReads[key]; ok {
+				delete(cx.blobReads, key)
 				ch <- m
 			}
 			cx.mu.Unlock()

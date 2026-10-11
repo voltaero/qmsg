@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Text with styled ranges. Ranges can nest and overlap.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FormattedText {
     /// The text as it reads without formatting, including a mention's
     /// display text, such as `@Ana`.
@@ -17,14 +17,14 @@ pub struct FormattedText {
 }
 
 /// A style over `text[start..end]`, in UTF-8 bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
     pub style: Style,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Style {
     Bold,
     Italic,
@@ -39,7 +39,7 @@ pub enum Style {
 }
 
 /// Who or what a mention points at. Ids are in the channel's scope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Mention {
     User(String),
     Channel(String),
@@ -76,7 +76,7 @@ impl FormattedText {
 }
 
 /// The reactions to a message with one key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Reaction {
     /// A Unicode emoji such as `👍`, or the provider's id for a custom one.
     pub key: String,

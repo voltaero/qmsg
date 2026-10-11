@@ -14,6 +14,15 @@ This Cargo workspace contains:
 | `providers/discord` | `.wasm` component (Go) | Discord user accounts, with ningen |
 | `services/browser-login` | Bun service | Host-side browser logins |
 
+## Native app backend
+
+Building the host requires the protobuf compiler (`protoc`).
+
+The orchestrator serves a gRPC API for a native app over a LAN or secure tunnel.
+It has expiring QR pairing, revocable device tokens, resumable events, typed
+function calls and media uploads/reads. See the [app API guide](crates/qmsg-orchestrator/APP_API.md)
+and [protobuf contract](crates/qmsg-orchestrator/proto/app.proto).
+
 ## Providers
 
 A provider connects qmsg to one messaging platform. Providers are Rust crates

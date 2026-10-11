@@ -35,9 +35,11 @@ Tested against a local Discord-like REST API and gateway over TLS
 - Signing in through the browser login service, then restoring the session
   after a restart; cancelling a login, and one at a time.
 - The directory on READY: the account, direct messages, guilds with their
-  members, and the channels the account can see, accepting text only where
-  it may send.
-- Live messages, edits, deletes, reactions, typing and read markers.
+  members, profile pictures, server icons, channel topics, and the channels
+  the account can see, accepting text and media where it may send.
+- Live messages, edits, deletes, reactions, typing, read markers and presence.
+- Streaming host-blob attachments through multipart requests, plus captions,
+  spoilers, dimensions, previews and signed URL expiry on received media.
 - Paged history, newest first, and single messages.
 - Sending, with a nonce that comes back on the message; a send cancelled
   before submission is reported `NotSent`. Once the REST call starts, a
@@ -50,8 +52,9 @@ Tested against a local Discord-like REST API and gateway over TLS
 - Resuming after the gateway drops, and logging out when the session is
   revoked.
 
-Not done: attachments and other content than text, group direct messages
-beyond opening them, threads and forums beyond listing them, presence,
+Not done: editing attachments, rendering/editing Discord embeds and stickers
+as native qmsg types, group direct messages beyond opening them, threads and
+forums beyond listing them,
 Discord's rate limit details (`RateLimited` has no retry time), and mark
 unread. Live QR sign-in, gateway readiness, directory sync and provider
 function discovery passed with a real Discord account. A live DM test also

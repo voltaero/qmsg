@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/diamondburned/arikawa/v3/discord"
@@ -86,7 +89,13 @@ func memberName(m discord.Member) string {
 
 // channel describes ch, accepting text only when send is allowed.
 func channel(ch discord.Channel, me discord.UserID, send bool) qmsg.Channel {
-	c := qmsg.Channel{ID: ch.ID.String(), Name: ch.Name, Kind: channelKind(ch.Type)}
+	c := qmsg.Channel{ID: ch.ID.String(), Name: ch.Name, Kind: channelKind(ch.Type), Icon: publicImage(ch.IconURLWithType(discord.AutoImage))}
+	if ch.Topic != "" {
+		c.Topic = qmsg.Str(ch.Topic)
+	}
+	if ch.Type == discord.DirectMessage && len(ch.DMRecipients) == 1 {
+		c.Icon = publicImage(ch.DMRecipients[0].AvatarURL())
+	}
 	if ch.ParentID.IsValid() {
 		c.Parent = qmsg.Str(ch.ParentID.String())
 	}
@@ -111,6 +120,10 @@ func channel(ch discord.Channel, me discord.UserID, send bool) qmsg.Channel {
 			MaxSize:  qmsg.U64(maxText),
 			TextUnit: qmsg.UnitChars,
 		}}
+		for _, kind := range []qmsg.ContentKindTag{qmsg.KindImage, qmsg.KindVideo, qmsg.KindAudio, qmsg.KindFile} {
+			c.AcceptedContent = append(c.AcceptedContent, qmsg.ContentRule{Kind: qmsg.ContentKind{Tag: kind}, MaxSize: qmsg.U64(maxFile)})
+		}
+		c.Limits.MaxAttachments = qmsg.U32(10)
 	}
 	return c
 }
@@ -128,6 +141,24 @@ func reactionKey(e discord.Emoji) string { return string(e.APIString()) }
 
 func attachment(a discord.Attachment) qmsg.Content {
 	m := qmsg.Media{Name: qmsg.Str(a.Filename), Size: qmsg.U64(a.Size), Source: qmsg.SourceURL{URL: string(a.URL)}}
+	if a.Width > 0 {
+		m.Metadata.Width = qmsg.U32(uint32(a.Width))
+	}
+	if a.Height > 0 {
+		m.Metadata.Height = qmsg.U32(uint32(a.Height))
+	}
+	if a.Proxy != "" {
+		m.Metadata.PreviewURL = qmsg.Str(string(a.Proxy))
+	}
+	if a.Description != "" {
+		m.Metadata.Description = qmsg.Str(a.Description)
+	}
+	m.Metadata.Spoiler = strings.HasPrefix(a.Filename, "SPOILER_")
+	if u, err := url.Parse(string(a.URL)); err == nil {
+		if expiry, err := strconv.ParseUint(u.Query().Get("ex"), 16, 64); err == nil && expiry <= ^uint64(0)/1000 {
+			m.Metadata.ExpiresAtMs = qmsg.U64(expiry * 1000)
+		}
+	}
 	if a.ContentType != "" {
 		m.Mime = qmsg.Str(a.ContentType)
 	}
@@ -150,6 +181,16 @@ func contents(m discord.Message) []qmsg.Content {
 	}
 	for _, a := range m.Attachments {
 		out = append(out, attachment(a))
+	}
+	for _, embed := range m.Embeds {
+		if data, err := json.Marshal(embed); err == nil {
+			out = append(out, qmsg.ContentCustom{Kind: "discord.embed", Data: data})
+		}
+	}
+	for _, sticker := range m.Stickers {
+		if data, err := json.Marshal(sticker); err == nil {
+			out = append(out, qmsg.ContentCustom{Kind: "discord.sticker", Data: data})
+		}
 	}
 	return out
 }
@@ -222,4 +263,20 @@ func contentKindOf(c qmsg.Content) qmsg.ContentKind {
 		return qmsg.ContentKind{Tag: qmsg.KindCustom, Custom: c.Kind}
 	}
 	return qmsg.ContentKind{Tag: qmsg.KindCustom, Custom: "unknown"}
+}
+
+func publicImage(value string) *qmsg.Media {
+	if value == "" {
+		return nil
+	}
+	return &qmsg.Media{Source: qmsg.SourceURL{URL: value}}
+}
+func profile(u discord.User) qmsg.User {
+	return qmsg.User{ID: u.ID.String(), Name: userName(u), Username: qmsg.Str(u.Username), Avatar: publicImage(u.AvatarURL())}
+}
+func memberProfile(guild discord.GuildID, m discord.Member) qmsg.User {
+	u := profile(m.User)
+	u.Name = memberName(m)
+	u.Avatar = publicImage(m.AvatarURL(guild))
+	return u
 }

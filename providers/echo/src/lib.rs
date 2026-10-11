@@ -492,13 +492,18 @@ impl Session<'_> {
                 User {
                     id: self.server.clone(),
                     name: self.server.clone(),
+                    username: None,
+                    avatar: None,
                 },
                 User {
                     id: ME.into(),
                     name: "qmsg".into(),
+                    username: None,
+                    avatar: None,
                 },
             ],
             channels: vec![self.channel.clone()],
+            icon: None,
         }))?;
         if reconnected {
             // Whatever the server said while we were away is lost.

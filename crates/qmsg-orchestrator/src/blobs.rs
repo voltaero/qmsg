@@ -136,6 +136,7 @@ impl Blob {
             mime,
             size: Some(self.size),
             source: MediaSource::Blob(self.id.clone()),
+            metadata: Default::default(),
         }
     }
 }

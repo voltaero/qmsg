@@ -765,6 +765,21 @@ pub enum ProviderMessage {
     Lookup {
         name: String,
     },
+    /// Asks the orchestrator to sign the account in through its browser
+    /// login service, using its recipe for `provider`, such as `discord`.
+    /// The orchestrator reports [`ProviderStatus::LoginRequired`] with a
+    /// link to the browser while the user signs in, then answers with
+    /// [`HostMessage::BrowserLogin`]. A provider has at most one running;
+    /// another fails at once. `request` is the provider's own.
+    BrowserLogin {
+        request: u64,
+        provider: String,
+    },
+    /// Gives up on a [`ProviderMessage::BrowserLogin`], closing the browser.
+    /// It is still answered, with an error unless it had already finished.
+    CancelBrowserLogin {
+        request: u64,
+    },
 }
 
 /// Sent from the orchestrator to a provider.
@@ -796,6 +811,13 @@ pub enum HostMessage {
     Addresses {
         name: String,
         result: Result<Vec<std::net::SocketAddr>, String>,
+    },
+    /// The answer to a [`ProviderMessage::BrowserLogin`]: the session token
+    /// the login produced. Store it as a secret; the orchestrator keeps no
+    /// copy.
+    BrowserLogin {
+        request: u64,
+        result: Result<String, String>,
     },
 }
 
@@ -886,5 +908,14 @@ mod tests {
             id: "1".into(),
         }));
         round_trip(HostMessage::Command(Command::Cancel { request: 2 }));
+        round_trip(ProviderMessage::BrowserLogin {
+            request: 3,
+            provider: "discord".into(),
+        });
+        round_trip(ProviderMessage::CancelBrowserLogin { request: 3 });
+        round_trip(HostMessage::BrowserLogin {
+            request: 3,
+            result: Ok("token".into()),
+        });
     }
 }

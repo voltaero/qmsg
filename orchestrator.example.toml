@@ -4,6 +4,22 @@
 # the current directory instead.
 data_dir = ".qmsg"
 
+# The browser login service providers such as Discord sign in through. It is
+# started on the first browser login; these are the defaults, relative to the
+# repository root.
+# [browser]
+# command = ["bun", "src/bootstrap.ts"]
+# dir = "services/browser-login"
+# start_timeout = 30   # seconds
+# login_timeout = 900  # seconds
+# Users open the login page at this address. The default, the service's own
+# localhost address, only works on this machine. Behind a reverse proxy, fix
+# the port and forward <viewer_url>/view/ to http://127.0.0.1:<port>/view/,
+# The host configures its trusted public origin for viewer input. Never
+# forward /sessions.
+# port = 7300
+# viewer_url = "https://qmsg.example.com/browser"
+
 [[provider]]
 name = "echo"
 wasm = "target/wasm32-wasip2/debug/qmsg_provider_echo.wasm"

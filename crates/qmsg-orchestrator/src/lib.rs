@@ -17,6 +17,10 @@
 //! Each provider gets one connection. A provider that sends an id or key
 //! over [`MAX_ID`] bytes, or a message that doesn't decode, is disconnected.
 //!
+//! Providers that sign in through a web page ask the orchestrator to run it
+//! in its [browser login service](BrowserConfig), and get back the session
+//! token.
+//!
 //! Providers' secrets live in a SQLite database in the data directory; see
 //! [`Encryption`] for how they are protected.
 
@@ -31,14 +35,15 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
+use futures_util::future::{AbortHandle, Abortable};
 use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use qmsg_types::{
     ABI_VERSION, Arguments, ChannelRef, Command, CommandError, CompletionPage, CompletionRequest,
     Content, DirectoryUpdate, Function, FunctionCall, FunctionContext, FunctionKind, HistoryPage,
-    HostMessage, InputIssue, LogLevel, MAX_BLOB_READS, MAX_FRAME, MAX_ID, MAX_LOOKUPS, MAX_READ,
-    MediaSource, Message, MessageEvent, ProviderConfig, ProviderMessage, ProviderStatus, Reply,
-    Value, Verification, VerificationRequest,
+    HostMessage, InputIssue, LogLevel, LoginStep, MAX_BLOB_READS, MAX_FRAME, MAX_ID, MAX_LOOKUPS,
+    MAX_READ, MediaSource, Message, MessageEvent, ProviderConfig, ProviderMessage, ProviderStatus,
+    Reply, Value, Verification, VerificationRequest,
 };
 use serde::Deserialize;
 use tokio::net::{TcpListener, TcpStream};
@@ -54,11 +59,14 @@ use wasmtime::{Config, Engine, Store, UpdateDeadline};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 mod blobs;
+mod browser;
 mod directory;
 mod secrets;
 
 use blobs::Blobs;
 pub use blobs::{Blob, BlobSource, FileBlob};
+use browser::Browser;
+pub use browser::{BrowserConfig, MAX_BROWSER_LOGINS};
 pub use directory::{ApplyError, Directory, OrganizationEntry, Scope};
 pub use secrets::Encryption;
 use secrets::Secrets;
@@ -216,6 +224,8 @@ struct Session {
     token: String,
     blocking: Arc<Blocking>,
     resolver: Resolver,
+    /// Weak, so dropping the orchestrator stops the service.
+    browser: Option<Weak<Browser>>,
     requests: Arc<Requests>,
     /// Set once the provider is killed.
     killed: watch::Receiver<bool>,
@@ -405,6 +415,7 @@ pub struct Orchestrator {
     blobs: Arc<Blobs>,
     blocking: Arc<Blocking>,
     resolver: Resolver,
+    browser: Option<Arc<Browser>>,
     addr: SocketAddr,
     server: JoinHandle<()>,
 }
@@ -455,6 +466,7 @@ impl Orchestrator {
             blobs: Arc::default(),
             blocking: Arc::default(),
             resolver: Arc::new(|name| Ok(name.to_socket_addrs()?.collect())),
+            browser: None,
             addr,
             server,
         })
@@ -469,6 +481,13 @@ impl Orchestrator {
         resolver: impl Fn(&str) -> io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
     ) {
         self.resolver = Arc::new(resolver);
+    }
+
+    /// Lets providers spawned after sign in through the browser login
+    /// service, which is started on the first login and stopped when the
+    /// orchestrator is dropped. Without it their browser logins fail.
+    pub fn set_browser(&mut self, config: BrowserConfig) {
+        self.browser = Some(Arc::new(Browser::new(config)));
     }
 
     /// Starts a provider on its own thread.
@@ -523,6 +542,7 @@ impl Orchestrator {
             token: token.clone(),
             blocking: self.blocking.clone(),
             resolver: self.resolver.clone(),
+            browser: self.browser.as_ref().map(Arc::downgrade),
             requests: Arc::default(),
             killed: killed.clone(),
             connections: watch::Sender::new(0),
@@ -1240,8 +1260,22 @@ async fn connection(stream: TcpStream, sessions: Sessions) {
         // the provider's answers and events.
         let mut reads = FuturesUnordered::new();
         let mut lookups = FuturesUnordered::new();
+        // At most one browser login, with its request and a way to give up.
+        let mut logins = FuturesUnordered::new();
+        let mut login: Option<(u64, AbortHandle)> = None;
         loop {
             let frame = tokio::select! {
+                Some(reply) = logins.next() => {
+                    if let HostMessage::BrowserLogin { request, .. } = &reply
+                        && login.as_ref().is_some_and(|(r, _)| r == request)
+                    {
+                        login = None;
+                    }
+                    if replies_tx.send(reply).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 Some(reply) = reads.next() => {
                     if replies_tx.send(reply).await.is_err() {
                         break;
@@ -1292,6 +1326,33 @@ async fn connection(stream: TcpStream, sessions: Sessions) {
                         };
                         if replies_tx.send(reply).await.is_err() {
                             break;
+                        }
+                    }
+                    Ok(ProviderMessage::BrowserLogin { request, provider }) => {
+                        if login.is_some() {
+                            let reply = HostMessage::BrowserLogin {
+                                request,
+                                result: Err("a browser login is already running".into()),
+                            };
+                            if replies_tx.send(reply).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        let (abort, registration) = AbortHandle::new_pair();
+                        login = Some((request, abort));
+                        let run = Abortable::new(session.browser_login(provider), registration);
+                        logins.push(async move {
+                            // Dropping the login on abort closes its browser.
+                            let result = run.await.unwrap_or_else(|_| Err("cancelled".into()));
+                            HostMessage::BrowserLogin { request, result }
+                        });
+                    }
+                    Ok(ProviderMessage::CancelBrowserLogin { request }) => {
+                        if let Some((running, abort)) = &login
+                            && *running == request
+                        {
+                            abort.abort();
                         }
                     }
                     Ok(message) => {
@@ -1409,6 +1470,10 @@ impl Session {
                 Some(self.read_blob(blob, offset, len).await)
             }
             ProviderMessage::Lookup { name } => Some(self.lookup(name).await),
+            // Handled by the connection, which tracks the one running.
+            ProviderMessage::BrowserLogin { .. } | ProviderMessage::CancelBrowserLogin { .. } => {
+                None
+            }
             ProviderMessage::Directory(update) => {
                 self.forward(ProviderEvent::Directory {
                     provider: self.id.clone(),
@@ -1451,6 +1516,31 @@ impl Session {
         }
     }
 
+    /// Runs a browser login with `recipe`, reporting its link as the
+    /// provider's status, and returns the token.
+    async fn browser_login(&self, recipe: String) -> Result<String, String> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or("browser login is not set up on this orchestrator")?
+            .upgrade()
+            .ok_or("the orchestrator has shut down")?;
+        let login = browser.start(&recipe).await?;
+        let status = ProviderStatus::LoginRequired(LoginStep {
+            message: format!("Sign in to {recipe} in the browser."),
+            function: None,
+            link: Some(login.link.clone()),
+            qr_code: None,
+        });
+        self.status.send_replace(status.clone());
+        self.forward(ProviderEvent::Status {
+            provider: self.id.clone(),
+            status,
+        })
+        .await;
+        login.finish().await
+    }
+
     async fn lookup(&self, name: String) -> HostMessage {
         let resolver = self.resolver.clone();
         let host = name.clone();
@@ -1489,6 +1579,7 @@ fn has_long_id(message: &ProviderMessage) -> bool {
         | ProviderMessage::SecretDelete { key } => key,
         ProviderMessage::ReadBlob { blob, .. } => blob,
         ProviderMessage::Lookup { name } => name,
+        ProviderMessage::BrowserLogin { provider, .. } => provider,
         _ => return false,
     };
     id.len() > MAX_ID
@@ -1559,6 +1650,7 @@ mod tests {
             token: "token".into(),
             blocking,
             resolver,
+            browser: None,
             requests: Arc::default(),
             killed,
             connections: watch::Sender::new(0),

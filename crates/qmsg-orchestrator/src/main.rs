@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use qmsg_orchestrator::{Directory, Encryption, Orchestrator, ProviderEvent, ProviderSpec};
+use qmsg_orchestrator::{
+    BrowserConfig, Directory, Encryption, Orchestrator, ProviderEvent, ProviderSpec,
+};
 use qmsg_types::{Content, DirectoryUpdate, MessageEvent};
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -11,6 +13,9 @@ struct Config {
     /// Where secrets are kept. Defaults to `~/.qmsg`; relative paths are from
     /// the current directory.
     data_dir: Option<PathBuf>,
+    /// The browser login service, started on the first browser login.
+    #[serde(default)]
+    browser: BrowserConfig,
     #[serde(default, rename = "provider")]
     providers: Vec<ProviderSpec>,
 }
@@ -40,7 +45,8 @@ async fn main() -> anyhow::Result<()> {
             .context("no home directory, set `data_dir` in the config")?
             .join(".qmsg"),
     };
-    let orchestrator = Orchestrator::new(&data_dir, Encryption::Keychain).await?;
+    let mut orchestrator = Orchestrator::new(&data_dir, Encryption::Keychain).await?;
+    orchestrator.set_browser(config.browser);
     let (events_tx, mut events) = mpsc::channel(256);
     let mut handles = Vec::new();
     for spec in config.providers {

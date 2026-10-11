@@ -10,6 +10,9 @@ This Cargo workspace contains:
 | `crates/qmsg-sdk` | `qmsg_sdk` library | What providers are built with |
 | `crates/qmsg-types` | `qmsg_types` library | Types shared by the orchestrator and providers |
 | `providers/echo` | `.wasm` component | Example provider |
+| `sdk/go` | Go module | SDK for providers written in Go; see its README |
+| `providers/discord` | `.wasm` component (Go) | Discord user accounts, with ningen |
+| `services/browser-login` | Bun service | Host-side browser logins |
 
 ## Providers
 
@@ -184,6 +187,24 @@ that changes is reported again. Providers keep what lets them log in again,
 such as a session token, with `secret_set`, so a restart doesn't ask. A
 `Logout` function deletes it, reports `DirectoryUpdate::Reset`, and starts
 over.
+
+Platforms that sign in through a web page use the orchestrator's browser
+login service (`services/browser-login`, a host process; providers stay in
+Wasm). A provider's login function sends `ProviderMessage::BrowserLogin`
+with the name of a host-owned recipe, such as `discord`. The orchestrator
+starts the service on the first such login, with a private key it generates,
+reports `LoginRequired` with a link to the service's viewer page, waits for
+the user to sign in there, and answers `HostMessage::BrowserLogin` with the
+session token, which the provider stores as a secret. Each provider runs one
+browser login at a time, and the orchestrator `MAX_BROWSER_LOGINS` (4) at
+once. `CancelBrowserLogin`, the provider's connection closing or its exit
+close the browser, and dropping the orchestrator stops the service. The
+login call waits until the user is done, so call it without the default
+request timeout; giving up on it cancels the login. Configure the service in
+`[browser]` of the orchestrator's config (see `orchestrator.example.toml`).
+The viewer link is the service's localhost address unless `viewer_url` is
+set, which a remote client needs, along with a reverse proxy forwarding
+`/view/` and nothing else.
 
 ### History and sync
 
@@ -401,4 +422,6 @@ cargo test
 ```
 
 The orchestrator's tests build the echo provider themselves, so they need the
-`wasm32-wasip2` target installed.
+`wasm32-wasip2` target installed. The Go provider tests (`discord`, `go_net`)
+also need Go 1.24 or newer, and fetch pinned tools into `target/` the first
+time; see `sdk/go/README.md`.

@@ -18,3 +18,16 @@ qmsg-sdk = { path = "crates/qmsg-sdk" }
 qmsg-types = { path = "crates/qmsg-types" }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", features = ["derive"] }
+
+# Compiling providers with an unoptimized Cranelift takes minutes for large
+# components, such as Go ones; optimize it even in debug builds.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3

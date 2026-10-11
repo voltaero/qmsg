@@ -1,0 +1,5 @@
+Qmsg.xcodeproj/
+QmsgKit/.build/
+QmsgKit/.swiftpm/
+DerivedData/
+*.xcuserstate

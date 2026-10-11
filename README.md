@@ -435,3 +435,9 @@ The orchestrator's tests build the echo provider themselves, so they need the
 `wasm32-wasip2` target installed. The Go provider tests (`discord`, `go_net`)
 also need Go 1.24 or newer, and fetch pinned tools into `target/` the first
 time; see `sdk/go/README.md`.
+
+## iOS app
+
+The SwiftUI iPhone and iPad client lives in [apps/ios](apps/ios/README.md).
+Use XcodeGen on a Mac to generate the Xcode project, then build and pair it
+with your orchestrator.

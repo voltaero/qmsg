@@ -1,0 +1,51 @@
+# Generate Qmsg.xcodeproj with `xcodegen` (brew install xcodegen).
+name: Qmsg
+options:
+  bundleIdPrefix: app.qmsg
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  QmsgKit:
+    path: QmsgKit
+targets:
+  Qmsg:
+    type: application
+    platform: iOS
+    sources:
+      - path: Qmsg
+    dependencies:
+      - package: QmsgKit
+    info:
+      path: Qmsg/Info.plist
+      properties:
+        CFBundleDisplayName: qmsg
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: qmsg scans the pairing QR code your server shows.
+        NSLocalNetworkUsageDescription: qmsg connects to your qmsg server on your local network.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.qmsg.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # QmsgKit builds in Swift 6 mode; the UI target uses 5 with complete
+        # concurrency warnings until it has been through strict checking.
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: true

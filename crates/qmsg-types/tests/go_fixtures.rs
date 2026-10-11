@@ -118,6 +118,28 @@ fn message() -> Message {
             },
         ],
         nonce: some("n1"),
+        email: Some(Box::new(Email {
+            subject: "Mail 😀".into(),
+            from: vec![EmailAddress {
+                address: "a@example.test".into(),
+                name: some("Alice"),
+            }],
+            to: vec![EmailAddress {
+                address: "b@example.test".into(),
+                name: None,
+            }],
+            cc: vec![],
+            bcc: vec![],
+            reply_to: vec![],
+            message_id: some("m@example.test"),
+            in_reply_to: some("old@example.test"),
+            references: vec!["old@example.test".into()],
+            html: some("<p>Hello</p>"),
+            content_ids: BTreeMap::from([("2".into(), "image@example.test".into())]),
+            read: true,
+            starred: false,
+            draft: true,
+        })),
     }
 }
 
@@ -132,6 +154,7 @@ fn plain_message() -> Message {
         edited_at: None,
         reactions: vec![],
         nonce: None,
+        email: None,
     }
 }
 
@@ -276,6 +299,10 @@ fn channel() -> Channel {
     Channel {
         topic: None,
         icon: None,
+        mailbox: Some(Box::new(Mailbox {
+            delimiter: some("/"),
+            attributes: vec!["\\Inbox".into()],
+        })),
         id: "c".into(),
         name: "general".into(),
         kind: ChannelKind::Text,
@@ -323,6 +350,7 @@ fn channel_kinds() -> Vec<Channel> {
     ]
     .into_iter()
     .map(|kind| Channel {
+        mailbox: None,
         topic: None,
         icon: None,
         id: "k".into(),

@@ -38,6 +38,25 @@ type Message struct {
 	EditedAt  *uint64
 	Reactions []Reaction
 	Nonce     *string
+	Email     *Email
+}
+
+type EmailAddress struct {
+	Address string
+	Name    *string
+}
+type Email struct {
+	Subject                    string
+	From, To, Cc, Bcc, ReplyTo []EmailAddress
+	MessageID, InReplyTo       *string
+	References                 []string
+	HTML                       *string
+	ContentIDs                 map[string]string
+	Read, Starred, Draft       bool
+}
+type Mailbox struct {
+	Delimiter  *string
+	Attributes []string
 }
 
 type Reaction struct {
@@ -228,6 +247,7 @@ type Channel struct {
 	Members         *[]string
 	AcceptedContent []ContentRule
 	Limits          MessageLimits
+	Mailbox         *Mailbox
 }
 
 // ChannelKind is a kind of channel; Custom is set only for ChannelCustom.

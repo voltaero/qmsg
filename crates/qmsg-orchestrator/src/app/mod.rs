@@ -237,7 +237,12 @@ impl Service {
         }
     }
     fn error(error: RequestError, action: bool) -> Cached {
+        let proven = matches!(&error,
+            RequestError::Failed(CommandError::Provider {details:Some(details),..})
+                if matches!(details.as_ref(),Value::Record(data) if data.get("delivery_unknown")==Some(&Value::Boolean(false)))
+        );
         let unknown = action
+            && !proven
             && matches!(
                 error,
                 RequestError::NotRunning
@@ -840,6 +845,34 @@ mod tests {
         );
         server.abort();
     }
+    #[test]
+    fn provider_can_report_a_definite_action_failure() {
+        for (details, expected) in [
+            (None, true),
+            (
+                Some(Box::new(Value::Record(Arguments::from([(
+                    "delivery_unknown".into(),
+                    Value::Boolean(false),
+                )])))),
+                false,
+            ),
+        ] {
+            let cached = Service::error(
+                RequestError::Failed(CommandError::Provider {
+                    code: "smtp_550".into(),
+                    message: "Recipient rejected".into(),
+                    details,
+                }),
+                true,
+            );
+            let Cached::Error(json) = cached else {
+                panic!("expected error")
+            };
+            let error: Error = serde_json::from_str(&json).unwrap();
+            assert_eq!(error.delivery_unknown, expected);
+        }
+    }
+
     #[test]
     fn refuse_cleartext_lan_and_bad_endpoints() {
         let mut c = Config {

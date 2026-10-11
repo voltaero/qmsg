@@ -15,6 +15,7 @@ interface Session {
   token?: string;
   busy: boolean;
   frameBusy?: boolean;
+  closing?: Promise<void>;
 }
 
 export interface Options {
@@ -69,13 +70,17 @@ export class LoginService {
   }
 
   private async finish(session: Session, state: State, token?: string) {
-    if (session.state !== "starting" && session.state !== "active") return;
+    if (session.state !== "starting" && session.state !== "active") {
+      await session.closing;
+      return;
+    }
     session.state = state;
     session.token = token;
     const context = session.context;
     session.context = undefined;
     session.page = undefined;
-    await context?.close().catch(() => {});
+    session.closing = context?.close().catch(() => {});
+    await session.closing;
   }
 
   private expire(session: Session) {
@@ -186,6 +191,8 @@ export class LoginService {
         if (!session) return json({ error: "No such session" }, 404);
         if (parts.length === 2 && request.method === "GET") return json({ state: session.state });
         if (parts.length === 3 && parts[2] === "claim" && request.method === "POST") {
+          await session.closing;
+          if (this.sessions.get(session.id) !== session) return json({ error: "Login ended" }, 409);
           if (session.state !== "complete" || !session.token) return json({ error: "No result" }, 409);
           const token = session.token;
           session.token = undefined;

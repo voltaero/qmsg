@@ -177,6 +177,7 @@ pub struct Contract {
     /// Functions may add optional inputs of their own, except for
     /// [`ActionKind::Login`], whose inputs are all the provider's.
     pub inputs: Vec<FunctionInput>,
+    /// Default result. Login may declare another type for a sign-in step.
     pub result: ValueType,
 }
 
@@ -192,7 +193,8 @@ impl ActionKind {
     /// | `AddReaction`, `RemoveReaction` | message | `reaction` | null |
     /// | `MarkRead`, `MarkUnread` | message | | null |
     /// | `Typing` | channel | | null |
-    /// | `Login`, `Logout` | provider or organization | the provider's own for `Login` | null |
+    /// | `Login` | provider or organization | the provider's own | declared by provider; null by default |
+    /// | `Logout` | provider or organization | | null |
     pub fn contract(&self) -> Option<Contract> {
         use ValueType::{List, Null, Text};
         let input = |id: &str, label: &str, value_type| FunctionInput {
@@ -476,7 +478,7 @@ fn check_contract(
             ContextKind::of(context)
         ));
     }
-    if *result != contract.result {
+    if *action != ActionKind::Login && *result != contract.result {
         return Err(format!("returns {result:?}, not {:?}", contract.result));
     }
     for expected in &contract.inputs {
@@ -740,6 +742,34 @@ mod tests {
             check_declarations(&FunctionContext::Provider, &[login]),
             Ok(())
         );
+    }
+
+    #[test]
+    fn login_steps_can_declare_results_but_keep_account_context() {
+        let mut login = Function::action("login", "Log in", ActionKind::Login);
+        login.kind = FunctionKind::Action {
+            action: ActionKind::Login,
+            result: ValueType::Record(vec![Field {
+                id: "url".into(),
+                label: "Sign-in URL".into(),
+                value_type: ValueType::Text,
+                required: true,
+            }]),
+        };
+        assert!(check_declarations(&FunctionContext::Provider, &[login.clone()]).is_ok());
+        assert!(
+            check_declarations(
+                &FunctionContext::Channel(ChannelRef::new(None, "inbox")),
+                &[login]
+            )
+            .is_err()
+        );
+        let mut logout = Function::action("logout", "Log out", ActionKind::Logout);
+        logout.kind = FunctionKind::Action {
+            action: ActionKind::Logout,
+            result: ValueType::Text,
+        };
+        assert!(check_declarations(&FunctionContext::Provider, &[logout]).is_err());
     }
 
     #[test]

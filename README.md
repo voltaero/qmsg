@@ -12,6 +12,7 @@ This Cargo workspace contains:
 | `providers/echo` | `.wasm` component | Example provider |
 | `sdk/go` | Go module | SDK for providers written in Go; see its README |
 | `providers/discord` | `.wasm` component (Go) | Discord user accounts, with ningen |
+| `providers/email` | `.wasm` component (Go) | IMAP/SMTP and Gmail OAuth; [setup](providers/email/README.md) |
 | `services/browser-login` | Bun service | Host-side browser logins |
 
 ## Native app backend
@@ -118,7 +119,7 @@ optional inputs of their own.
 | `AddReaction`, `RemoveReaction` | message | `reaction` | null |
 | `MarkRead`, `MarkUnread` | message | none | null |
 | `Typing` | channel | none | null |
-| `Login` | provider or organization | the provider's own | null |
+| `Login` | provider or organization | the provider's own | declared by provider (default: null) |
 | `Logout` | provider or organization | none | null |
 
 `ActionKind::Custom` actions describe their own inputs and result, and need no

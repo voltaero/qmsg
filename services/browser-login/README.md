@@ -64,3 +64,10 @@ untested.
 bun run check
 bun test
 ```
+
+## Gmail OAuth
+
+Gmail does not use this service. The native client receives its callback locally
+and submits the code through qmsg's paired API. The email WASM provider handles
+PKCE, code exchange and token refresh. See the
+[email setup guide](../../providers/email/README.md).

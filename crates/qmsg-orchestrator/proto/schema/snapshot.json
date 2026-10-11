@@ -29,6 +29,16 @@
         "limits": {
           "$ref": "#/$defs/MessageLimits"
         },
+        "mailbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mailbox"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "members": {
           "description": "The ids of the users in the channel, or `None` when it is open to its\nwhole organization or the platform doesn't say.",
           "items": {
@@ -223,6 +233,27 @@
       },
       "required": [
         "message"
+      ],
+      "type": "object"
+    },
+    "Mailbox": {
+      "description": "A mail folder. Attributes retain server special-use flags such as \\Sent.",
+      "properties": {
+        "attributes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "delimiter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attributes"
       ],
       "type": "object"
     },

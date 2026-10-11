@@ -108,6 +108,8 @@ pub struct Message {
     /// [`Command::Send`], when the provider can tell which send it is. It
     /// settles a send whose answer never came.
     pub nonce: Option<String>,
+    /// Mail fields; absent for chat messages. HTML is untrusted and must be sanitized by clients.
+    pub email: Option<Box<Email>>,
 }
 
 impl Message {
@@ -129,8 +131,44 @@ impl Message {
             edited_at: None,
             reactions: Vec::new(),
             nonce: None,
+            email: None,
         }
     }
+}
+
+/// An RFC mailbox address, with an optional display name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct EmailAddress {
+    pub address: String,
+    pub name: Option<String>,
+}
+
+/// Mail envelope and state. Thread references use RFC Message-IDs, not channel-local ids.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Email {
+    pub subject: String,
+    pub from: Vec<EmailAddress>,
+    pub to: Vec<EmailAddress>,
+    pub cc: Vec<EmailAddress>,
+    pub bcc: Vec<EmailAddress>,
+    pub reply_to: Vec<EmailAddress>,
+    pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+    /// Alternative to the plain text body in content. Never render without sanitizing.
+    pub html: Option<String>,
+    /// MIME Content-IDs by content index, for inline images in HTML.
+    pub content_ids: std::collections::BTreeMap<String, String>,
+    pub read: bool,
+    pub starred: bool,
+    pub draft: bool,
+}
+
+/// A mail folder. Attributes retain server special-use flags such as \Sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Mailbox {
+    pub delimiter: Option<String>,
+    pub attributes: Vec<String>,
 }
 
 /// Something that happened to a message or in a channel.
@@ -360,6 +398,7 @@ pub struct Channel {
     /// can't be written to, such as a voice channel without text chat.
     pub accepted_content: Vec<ContentRule>,
     pub limits: MessageLimits,
+    pub mailbox: Option<Box<Mailbox>>,
 }
 
 impl Channel {
@@ -376,6 +415,7 @@ impl Channel {
             members: None,
             accepted_content: Vec::new(),
             limits: MessageLimits::default(),
+            mailbox: None,
         }
     }
 
@@ -659,7 +699,9 @@ pub enum CommandError {
     /// Invalid function arguments, with codes and messages for each input.
     InvalidInput(Vec<InputIssue>),
     /// A platform-specific failure with a stable code and optional data,
-    /// such as confirmed progress after a partial failure.
+    /// such as confirmed progress after a partial failure. A details record with
+    /// `delivery_unknown: false` confirms that an action did not take effect;
+    /// the app API otherwise treats these action errors as uncertain.
     Provider {
         code: String,
         message: String,

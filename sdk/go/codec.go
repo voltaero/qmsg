@@ -1,6 +1,9 @@
 package qmsg
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // EncodeProviderMessage encodes what a provider sends.
 func EncodeProviderMessage(m ProviderMessage) []byte {
@@ -54,6 +57,66 @@ func (e *encoder) message(m Message) {
 		e.boolean(r.Me)
 	}
 	e.optStr(m.Nonce)
+	e.boolean(m.Email != nil)
+	if m.Email != nil {
+		e.email(*m.Email)
+	}
+}
+
+func (e *encoder) email(m Email) {
+	e.str(m.Subject)
+	for _, list := range [][]EmailAddress{m.From, m.To, m.Cc, m.Bcc, m.ReplyTo} {
+		e.varint(uint64(len(list)))
+		for _, a := range list {
+			e.str(a.Address)
+			e.optStr(a.Name)
+		}
+	}
+	e.optStr(m.MessageID)
+	e.optStr(m.InReplyTo)
+	e.varint(uint64(len(m.References)))
+	for _, r := range m.References {
+		e.str(r)
+	}
+	e.optStr(m.HTML)
+	keys := make([]string, 0, len(m.ContentIDs))
+	for k := range m.ContentIDs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	e.varint(uint64(len(keys)))
+	for _, k := range keys {
+		e.str(k)
+		e.str(m.ContentIDs[k])
+	}
+	e.boolean(m.Read)
+	e.boolean(m.Starred)
+	e.boolean(m.Draft)
+}
+func (d *decoder) optEmail() *Email {
+	if !d.option() {
+		return nil
+	}
+	m := &Email{Subject: d.str()}
+	for _, list := range []*[]EmailAddress{&m.From, &m.To, &m.Cc, &m.Bcc, &m.ReplyTo} {
+		*list = seq(d, func() EmailAddress { return EmailAddress{d.str(), d.optStr()} })
+	}
+	m.MessageID = d.optStr()
+	m.InReplyTo = d.optStr()
+	m.References = seq(d, d.str)
+	m.HTML = d.optStr()
+	n := d.count()
+	if n > 0 {
+		m.ContentIDs = map[string]string{}
+	}
+	for i := 0; i < n; i++ {
+		k := d.str()
+		m.ContentIDs[k] = d.str()
+	}
+	m.Read = d.boolean()
+	m.Starred = d.boolean()
+	m.Draft = d.boolean()
+	return m
 }
 
 func (e *encoder) messageEvent(v MessageEvent) {
@@ -266,6 +329,14 @@ func (e *encoder) channel(c Channel) {
 	}
 	e.optU32(c.Limits.MaxAttachments)
 	e.optU64(c.Limits.MaxTotalSize)
+	e.boolean(c.Mailbox != nil)
+	if c.Mailbox != nil {
+		e.optStr(c.Mailbox.Delimiter)
+		e.varint(uint64(len(c.Mailbox.Attributes)))
+		for _, a := range c.Mailbox.Attributes {
+			e.str(a)
+		}
+	}
 }
 
 func (e *encoder) organization(o Organization) {
@@ -897,6 +968,7 @@ func (d *decoder) message() Message {
 			return Reaction{Key: d.str(), Count: d.u32(), Me: d.boolean()}
 		}),
 		Nonce: d.optStr(),
+		Email: d.optEmail(),
 	}
 }
 
@@ -1054,6 +1126,9 @@ func (d *decoder) channel() Channel {
 		return r
 	})
 	c.Limits = MessageLimits{d.optU32(), d.optU64()}
+	if d.option() {
+		c.Mailbox = &Mailbox{d.optStr(), seq(d, d.str)}
+	}
 	return c
 }
 

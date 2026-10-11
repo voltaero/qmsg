@@ -38,3 +38,16 @@ wasm = "target/wasm32-wasip2/debug/qmsg_provider_echo.wasm"
 
 [provider.settings]
 server = "127.0.0.1:7000"
+
+# Email and Gmail OAuth settings: providers/email/README.md.
+# [[provider]]
+# name = "email"
+# wasm = "target/go/providers-email.wasm"
+# [provider.settings]
+# service = "imap"
+# address = "you@example.com"
+# imap_addr = "imap.example.com:993"
+# smtp_addr = "smtp.example.com:465"
+# smtp_tls = "tls"
+# sent_mailbox = "Sent"
+# trash_mailbox = "Trash"

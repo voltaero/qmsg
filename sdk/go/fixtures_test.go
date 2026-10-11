@@ -48,6 +48,7 @@ func fixMessage() Message {
 		ReplyTo: Str("m0"), Content: allContent(), EditedAt: U64(1_700_000_000_500),
 		Reactions: []Reaction{{"👍", 3, true}, {"custom:1", 70000, false}},
 		Nonce:     Str("n1"),
+		Email:     &Email{Subject: "Mail 😀", From: []EmailAddress{{"a@example.test", Str("Alice")}}, To: []EmailAddress{{"b@example.test", nil}}, MessageID: Str("m@example.test"), InReplyTo: Str("old@example.test"), References: []string{"old@example.test"}, HTML: Str("<p>Hello</p>"), ContentIDs: map[string]string{"2": "image@example.test"}, Read: true, Draft: true},
 	}
 }
 
@@ -104,7 +105,8 @@ func fixFunctions() []Function {
 
 func fixChannel() Channel {
 	return Channel{
-		ID: "c", Name: "general", Kind: ChannelKind{Tag: ChannelText}, Parent: Str("cat"),
+		Mailbox: &Mailbox{Delimiter: Str("/"), Attributes: []string{"\\Inbox"}},
+		ID:      "c", Name: "general", Kind: ChannelKind{Tag: ChannelText}, Parent: Str("cat"),
 		Position: U32(3), Members: &[]string{"u1", "u2"},
 		AcceptedContent: []ContentRule{
 			{ContentKind{Tag: KindText}, U64(2000), UnitChars, nil},

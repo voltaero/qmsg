@@ -216,3 +216,45 @@ retry suppression, stream cursor ordering, device-isolated blob access, and an
 upload through the WASM echo provider. Discord tests run the actual Go WASM
 component against a local TLS REST/gateway fixture, including streamed multipart
 media. They do not require or send messages to a real Discord account.
+
+## Email
+
+`Message.email` carries the mail envelope, RFC thread references, read/star/draft
+flags and an optional HTML alternative. `Channel.mailbox` carries folder
+attributes and its delimiter. Plain text and attachments keep the shared
+content/media format, including device-owned media handles in gRPC replies.
+HTML and remote image URLs are untrusted. Sanitize HTML and block automatic
+remote image loading. Resolve `cid:` media using `email.content_ids`, whose keys
+are stringified content indices. Group threads by RFC Message-ID/References;
+mail IDs and history cursors are mailbox-scoped `UIDVALIDITY:UID`.
+
+Discover `compose` and `reply` through Functions. Their typed result distinguishes
+SMTP acceptance from saving a Sent copy. Treat `delivery_unknown` as an uncertain
+send and check Sent before retrying. Email read/unread applies to one message;
+these actions use custom kinds rather than the chat read-through contract.
+The standard delete action, when offered, moves a message to Trash. See
+[email provider setup and limits](../../providers/email/README.md).
+
+A provider error can set a typed details record with `delivery_unknown: false`
+when it can prove an action did not take effect. The API keeps this distinction
+in its error envelope. Without that explicit proof it keeps its conservative
+unknown-outcome behavior. The email provider uses this for a definite SMTP
+rejection or a failure before DATA; loss after DATA remains uncertain.
+
+### Gmail desktop sign-in
+
+Gmail uses normal discovered provider functions, with no public callback route.
+Login actions may declare typed results for each step; clients read their result
+type from function discovery. Logout and other standard action contracts retain
+their fixed result types.
+The native client starts a temporary loopback listener on its own device, calls
+`login` with `redirect_uri`, and opens the returned `url` in the regular browser.
+The result also provides `state` and `expires_at` (Unix seconds). Validate the
+callback path and state, then discover and call `finish_login` with `code` and
+`state`. On denial, call `cancel_login`. Close the listener on completion,
+cancellation or expiry. Use fresh operation IDs for a new login; reuse the same
+ID only when retrying the same request. Codes are secret and must not be logged.
+The provider keeps PKCE verifiers and exchanged tokens private. This works when
+qmsg runs elsewhere on the LAN or behind a tunnel, since the callback belongs to
+the client device. Mobile login requires a separate supported platform flow;
+the current Gmail login functions implement desktop PKCE only.

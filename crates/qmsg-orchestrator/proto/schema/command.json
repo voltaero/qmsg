@@ -165,6 +165,117 @@
         }
       ]
     },
+    "Email": {
+      "description": "Mail envelope and state. Thread references use RFC Message-IDs, not channel-local ids.",
+      "properties": {
+        "bcc": {
+          "items": {
+            "$ref": "#/$defs/EmailAddress"
+          },
+          "type": "array"
+        },
+        "cc": {
+          "items": {
+            "$ref": "#/$defs/EmailAddress"
+          },
+          "type": "array"
+        },
+        "content_ids": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "MIME Content-IDs by content index, for inline images in HTML.",
+          "type": "object"
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "from": {
+          "items": {
+            "$ref": "#/$defs/EmailAddress"
+          },
+          "type": "array"
+        },
+        "html": {
+          "description": "Alternative to the plain text body in content. Never render without sanitizing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "in_reply_to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "references": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reply_to": {
+          "items": {
+            "$ref": "#/$defs/EmailAddress"
+          },
+          "type": "array"
+        },
+        "starred": {
+          "type": "boolean"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "to": {
+          "items": {
+            "$ref": "#/$defs/EmailAddress"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "subject",
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "reply_to",
+        "references",
+        "content_ids",
+        "read",
+        "starred",
+        "draft"
+      ],
+      "type": "object"
+    },
+    "EmailAddress": {
+      "description": "An RFC mailbox address, with an optional display name.",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "address"
+      ],
+      "type": "object"
+    },
     "FormattedText": {
       "description": "Text with styled ranges. Ranges can nest and overlap.",
       "properties": {
@@ -506,6 +617,17 @@
             "integer",
             "null"
           ]
+        },
+        "email": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Email"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mail fields; absent for chat messages. HTML is untrusted and must be sanitized by clients."
         },
         "id": {
           "description": "Unique within the channel.",

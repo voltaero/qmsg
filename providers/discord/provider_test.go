@@ -72,3 +72,10 @@ func TestDirectMessagesSortNewestFirst(t *testing.T) {
 		t.Fatal("server channels keep Discord's position")
 	}
 }
+
+func TestGroupWithoutOtherRecipientsContainsOnlySelf(t *testing.T) {
+	c := channel(discord.Channel{ID: 3101, Type: discord.GroupDM}, 1001, true)
+	if c.Members == nil || len(*c.Members) != 1 || (*c.Members)[0] != "1001" {
+		t.Fatalf("empty group must not fall back to all contacts: %v", c.Members)
+	}
+}

@@ -151,7 +151,7 @@ func channel(ch discord.Channel, me discord.UserID, send bool) qmsg.Channel {
 	} else {
 		c.Position = qmsg.U32(recency(ch))
 	}
-	if len(ch.DMRecipients) > 0 {
+	if ch.Type == discord.DirectMessage || ch.Type == discord.GroupDM {
 		members := []string{me.String()}
 		var names []string
 		for _, u := range ch.DMRecipients {

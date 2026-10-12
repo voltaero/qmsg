@@ -116,7 +116,7 @@ func (s *server) ready() map[string]any {
 	return map[string]any{
 		"v": 9, "user": user(meID, "tester"), "session_id": "session-1",
 		"resume_gateway_url": "wss://gateway.discord.gg",
-		"private_channels":   []any{map[string]any{"id": dmID, "type": 1, "recipients": []any{user(friendID, "friend")}}},
+		"private_channels":   []any{map[string]any{"id": "3101", "type": 3}},
 		"guilds": []any{map[string]any{
 			"id": guildID, "name": "Test Guild", "owner_id": friendID,
 			"roles": []any{map[string]any{"id": guildID, "name": "@everyone", "permissions": strconv.Itoa(everyone)}},
@@ -251,6 +251,13 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if !authorized {
 		reply(w, 401, apiError{"401: Unauthorized", 0})
+		return
+	}
+	if path == "/users/@me/channels" && r.Method == "GET" {
+		reply(w, 200, []any{
+			map[string]any{"id": dmID, "type": 1, "recipients": []any{user(friendID, "friend")}},
+			map[string]any{"id": "3101", "type": 3, "recipients": []any{user(friendID, "friend")}},
+		})
 		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")

@@ -244,7 +244,7 @@ func (p *provider) connect(ctx context.Context, token string) error {
 		return err
 	}
 	lost := make(chan error, 1)
-	p.handleEvents(st, lost)
+	p.handleEvents(ctx, st, lost)
 	openCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	err = st.Open(openCtx)
 	cancel()
@@ -293,13 +293,23 @@ func isUnauthorized(err error) bool {
 
 // sync reports everything the session knows: a reset, the direct
 // messages, each guild, then Ready.
-func (p *provider) sync(st *ningen.State) {
+func (p *provider) sync(ctx context.Context, st *ningen.State) error {
 	me, err := st.Me()
 	if err != nil {
-		p.cx.Status(qmsg.StatusFailed{Reason: "no account in the session"})
-		return
+		return fmt.Errorf("no account in the session: %w", err)
 	}
 	p.cx.Status(qmsg.StatusSyncing{})
+	// READY may omit all one-to-one DMs and group recipients. Fetch the
+	// complete private channel list even when the gateway cache is nonempty.
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	dms, err := st.Session.WithContext(requestCtx).PrivateChannels()
+	if err != nil {
+		return fmt.Errorf("loading direct messages: %w", err)
+	}
+	for i := range dms {
+		st.Cabinet.ChannelSet(&dms[i], true)
+	}
 	p.mu.Lock()
 	p.me = me.ID
 	p.users = map[string]map[discord.UserID]bool{}
@@ -307,14 +317,12 @@ func (p *provider) sync(st *ningen.State) {
 	p.cx.Directory(qmsg.DirectoryReset{})
 	p.cx.Directory(qmsg.Me{ID: qmsg.Str(me.ID.String())})
 	p.knowUser(nil, *me)
-	if dms, err := st.Cabinet.PrivateChannels(); err == nil {
-		for _, ch := range dms {
-			ch = resolveDMRecipients(st, ch)
-			for _, u := range ch.DMRecipients {
-				p.knowUser(nil, u)
-			}
-			p.cx.Directory(qmsg.ChannelUpserted{Channel: channel(ch, me.ID, true)})
+	for _, ch := range dms {
+		ch = resolveDMRecipients(st, ch)
+		for _, u := range ch.DMRecipients {
+			p.knowUser(nil, u)
 		}
+		p.cx.Directory(qmsg.ChannelUpserted{Channel: channel(ch, me.ID, true)})
 	}
 	if guilds, err := st.Cabinet.Guilds(); err == nil {
 		for _, g := range guilds {
@@ -325,6 +333,7 @@ func (p *provider) sync(st *ningen.State) {
 	p.synced = true
 	p.mu.Unlock()
 	p.cx.Status(qmsg.StatusReady{})
+	return nil
 }
 
 func (p *provider) organization(st *ningen.State, g discord.Guild) qmsg.Organization {
@@ -427,7 +436,7 @@ func (p *provider) canSend(st *ningen.State, ch discord.Channel) bool {
 
 // handleEvents reports the session's events. arikawa calls these in order
 // from the gateway's loop.
-func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
+func (p *provider) handleEvents(ctx context.Context, st *ningen.State, lost chan<- error) {
 	// Only events of the live session, after its directory.
 	live := func() bool {
 		p.mu.Lock()
@@ -442,7 +451,12 @@ func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
 			p.mu.Lock()
 			p.st = st
 			p.mu.Unlock()
-			p.sync(st)
+			if err := p.sync(ctx, st); err != nil {
+				select {
+				case lost <- err:
+				default:
+				}
+			}
 		case *gateway.ResumedEvent:
 			// Discord replays what was missed, so the directory still holds.
 			p.mu.Lock()

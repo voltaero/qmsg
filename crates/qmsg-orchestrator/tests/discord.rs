@@ -92,10 +92,18 @@ async fn message_event(events: &mut mpsc::Receiver<ProviderEvent>) -> MessageEve
 async fn synced(events: &mut mpsc::Receiver<ProviderEvent>) -> Organization {
     let mut guild = None;
     let mut me = None;
+    let mut dms = std::collections::HashMap::new();
     loop {
         match next(events).await {
             ProviderEvent::Directory { update, .. } => match update {
                 DirectoryUpdate::OrganizationUpserted(o) => guild = Some(o),
+                DirectoryUpdate::ChannelUpserted {
+                    organization: None,
+                    channel,
+                } => {
+                    dms.insert(channel.id.clone(), channel);
+                }
+
                 DirectoryUpdate::Me {
                     organization: None,
                     id,
@@ -114,6 +122,16 @@ async fn synced(events: &mut mpsc::Receiver<ProviderEvent>) -> Organization {
         }
     }
     assert_eq!(me.as_deref(), Some("1001"));
+    for id in ["3100", "3101"] {
+        let dm = dms
+            .get(id)
+            .expect("REST private channels must be in the startup directory");
+        assert_eq!(
+            dm.members.as_deref(),
+            Some(["1001".to_owned(), "1002".to_owned()].as_slice())
+        );
+    }
+
     guild.expect("the guild")
 }
 

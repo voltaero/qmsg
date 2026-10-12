@@ -126,20 +126,33 @@ impl Manager {
             active: BTreeMap::new(),
         };
         for account in accounts {
-            let template = templates.get(&account.kind).ok_or_else(|| {
-                anyhow::anyhow!("provider type is no longer installed: {}", account.kind)
-            })?;
             anyhow::ensure!(
                 !state.accounts.contains_key(&account.name),
                 "duplicate account name"
             );
-            if account.enabled {
-                let mut spec = template.clone();
-                spec.name = account.name.clone();
-                spec.settings.extend(account.settings.clone());
-                let mut handle = host.spawn(spec, events.clone())?;
-                handle.set_timeout(None);
-                state.active.insert(account.name.clone(), Arc::new(handle));
+            // One account that can't start must not keep the others, or the
+            // server, from running. It stays listed so it can be fixed.
+            match templates.get(&account.kind) {
+                None => tracing::warn!(
+                    account = account.name,
+                    "provider type {} is no longer installed",
+                    account.kind
+                ),
+                Some(template) if account.enabled => {
+                    let mut spec = template.clone();
+                    spec.name = account.name.clone();
+                    spec.settings.extend(account.settings.clone());
+                    match host.spawn(spec, events.clone()) {
+                        Ok(mut handle) => {
+                            handle.set_timeout(None);
+                            state.active.insert(account.name.clone(), Arc::new(handle));
+                        }
+                        Err(error) => {
+                            tracing::error!(account = account.name, "could not start: {error:#}")
+                        }
+                    }
+                }
+                Some(_) => {}
             }
             state.accounts.insert(account.name.clone(), account);
         }
@@ -187,6 +200,22 @@ impl Manager {
         file.persist(&self.path)
             .map_err(|_| Status::internal("could not save accounts"))?;
         Ok(())
+    }
+    /// Asks every running account to shut down and waits a few seconds for
+    /// them to finish; whatever is still running is then killed.
+    pub async fn shutdown(&self) {
+        let mut state = self.state.lock().await;
+        for handle in state.active.values() {
+            let _ = handle.shutdown();
+        }
+        let names: Vec<String> = state.active.keys().cloned().collect();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while names.iter().any(|name| self.host.provider_running(name)) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        state.active.clear();
     }
     async fn stop(&self, state: &mut State, name: &str) -> Result<(), Status> {
         if let Some(handle) = state.active.remove(name) {
@@ -368,6 +397,44 @@ mod tests {
             public_settings(&spec),
             [("address".into(), "".into())].into()
         );
+    }
+
+    #[tokio::test]
+    async fn accounts_that_cannot_start_do_not_stop_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = |name: &str, kind: &str| ManagedProvider {
+            name: name.into(),
+            label: name.into(),
+            kind: kind.into(),
+            enabled: true,
+            settings: BTreeMap::new(),
+        };
+        std::fs::write(
+            dir.path().join("providers.json"),
+            serde_json::to_vec(&vec![account("old", "removed"), account("echo", "echo")]).unwrap(),
+        )
+        .unwrap();
+        let host = Orchestrator::new(dir.path(), Encryption::Plaintext)
+            .await
+            .unwrap();
+        let spec = ProviderSpec {
+            name: "echo".into(),
+            wasm: dir.path().join("missing.wasm"),
+            settings: BTreeMap::new(),
+        };
+        let service = Manager::service(dir.path(), host, vec![spec])
+            .await
+            .unwrap();
+        let manager = service.management.as_ref().unwrap();
+        let names: Vec<_> = manager
+            .catalog()
+            .await
+            .accounts
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names, ["echo", "old"]);
+        service.stopper().stop().await;
     }
 
     #[tokio::test]

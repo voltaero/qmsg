@@ -73,6 +73,14 @@ async fn main() -> anyhow::Result<()> {
     let mut orchestrator = Orchestrator::new(&data_dir, Encryption::Keychain).await?;
     orchestrator.set_browser(config.browser);
     let service = app::Service::managed(&data_dir, orchestrator, config.providers).await?;
-    tokio::select! {result=service.serve(config.app)=>result?,_ = tokio::signal::ctrl_c()=>{tracing::info!("shutting down");}}
-    Ok(())
+    let stopper = service.stopper();
+    let result = tokio::select! {
+        result = service.serve(config.app) => result,
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutting down");
+            Ok(())
+        }
+    };
+    stopper.stop().await;
+    result
 }

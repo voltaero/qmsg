@@ -103,6 +103,8 @@ embedded servers created with `Service::new` return `UNIMPLEMENTED` for it.
 The config's provider entries supply installed components and initial accounts.
 After the first change, `<data_dir>/providers.json` holds the account list and
 overrides those initial accounts on restart. WASM paths remain server settings.
+An account whose type is no longer installed, or whose component fails to
+start, is logged and left stopped; the server and other accounts still start.
 Adding, restarting or removing an active account sends a fresh `Watch` snapshot;
 a resumed cursor that predates such a change also gets a snapshot.
 
@@ -170,8 +172,9 @@ unknown. The journal is not a promise of exactly-once platform delivery.
 Operation timestamps can be at most seven days old and five minutes ahead.
 Records older than seven days can be removed because the old request can no
 longer run. There are limits of 5,000 records per device, 50,000 overall and
-512 MiB of occupied device-database pages; new actions fail at those limits.
-Action replies over 128 KiB cannot be journaled and require a state check.
+512 MiB of occupied device-database pages; new actions fail at those limits
+with `RESOURCE_EXHAUSTED` before running. Action replies over 128 KiB cannot be
+journaled and return `UNKNOWN`: the action ran, so check state.
 Large reads belong in history or lookup calls, not an action result.
 
 Requests default to 60 seconds; `timeout_ms` is bounded to 100..900,000 ms.
@@ -281,5 +284,7 @@ cancellation or expiry. Use fresh operation IDs for a new login; reuse the same
 ID only when retrying the same request. Codes are secret and must not be logged.
 The provider keeps PKCE verifiers and exchanged tokens private. This works when
 qmsg runs elsewhere on the LAN or behind a tunnel, since the callback belongs to
-the client device. Mobile login requires a separate supported platform flow;
-the current Gmail login functions implement desktop PKCE only.
+the client device. On iOS, a provider configured with `oauth_redirect_uri` takes
+no callback input: the app opens the sign-in page in the system authentication
+browser and submits the returned code and state the same way. See the
+[email provider guide](../../providers/email/README.md).

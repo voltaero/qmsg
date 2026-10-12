@@ -98,6 +98,15 @@ pub struct Service {
     reads: Arc<Semaphore>,
     devices: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
 }
+/// Shuts down a service's managed accounts; see [`Service::stopper`].
+pub struct Stopper(Option<Arc<providers::Manager>>);
+impl Stopper {
+    pub async fn stop(self) {
+        if let Some(manager) = self.0 {
+            manager.shutdown().await;
+        }
+    }
+}
 impl Service {
     pub async fn managed(
         data: &Path,
@@ -144,6 +153,10 @@ impl Service {
         semaphore
             .try_acquire_owned()
             .map_err(|_| Status::resource_exhausted("too many device requests"))
+    }
+    /// Stops managed accounts gracefully, for use after `serve` is dropped.
+    pub fn stopper(&self) -> Stopper {
+        Stopper(self.management.clone())
     }
     pub async fn serve(self, config: Config) -> anyhow::Result<()> {
         config.validate()?;
@@ -553,7 +566,9 @@ impl App for Service {
         if action {
             let saved = serde_json::to_string(&result).unwrap();
             if saved.len() > 128 * 1024 {
-                return Err(Status::resource_exhausted(
+                // The action ran, so this is no quota refusal: its outcome
+                // is unknown to the client.
+                return Err(Status::unknown(
                     "action result too large; check state before retrying",
                 ));
             }

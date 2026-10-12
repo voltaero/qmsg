@@ -148,7 +148,9 @@ struct ChatsView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(item.health.needsUser ? item.health.color.opacity(0.1) : nil)
+                    // A nil background here would undo the list's canvas and show the
+                    // default black row in dark mode while an account starts.
+                    .listRowBackground(item.health.needsUser ? AnyView(Color.appCanvas.overlay(item.health.color.opacity(0.1))) : AnyView(Color.appCanvas))
                 }
             }
         }

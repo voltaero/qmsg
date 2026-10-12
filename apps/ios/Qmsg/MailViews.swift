@@ -234,47 +234,10 @@ struct MailboxView: View {
 
     var body: some View {
         List {
-            if let error = conversation.loadError {
-                VStack(alignment: .leading, spacing: 8) {
-                    ErrorNote(message: error)
-                    Button("Try again") { Task { await store.loadLatest(key) } }
-                }
-            }
-            if let error { ErrorNote(message: error) { self.error = nil } }
-            ForEach(mail) { message in
-                Button { opened = message.id } label: {
-                    MailRow(message: message, showsRecipients: role.showsRecipients)
-                }
-                .buttonStyle(.plain)
+            Group { rows }
+                // Every row, including errors and "Load more", or plain
+                // lists show the default black rows in dark mode.
                 .listRowBackground(Color.appCanvas)
-                .swipeActions(edge: .leading) {
-                    if let email = message.email {
-                        Button(email.read ? "Unread" : "Read", systemImage: email.read ? "envelope.badge" : "envelope.open") {
-                            act(email.read ? "mark_unread" : "mark_read", message)
-                        }.tint(.blue)
-                    }
-                }
-                .swipeActions(edge: .trailing) {
-                    if functions.contains(where: { $0.id == "trash" }) {
-                        Button("Trash", systemImage: "trash", role: .destructive) { act("trash", message) }
-                    }
-                    if let email = message.email {
-                        Button(email.starred ? "Unstar" : "Star", systemImage: email.starred ? "star.slash" : "star") {
-                            act(email.starred ? "unstar" : "star", message)
-                        }.tint(.orange)
-                    }
-                }
-            }
-            if search.isEmpty, !conversation.reachedStart, conversation.olderCursor != nil, !conversation.messages.isEmpty {
-                HStack {
-                    Spacer()
-                    if conversation.isLoadingOlder { ProgressView() }
-                    else { Button("Load more") { Task { await store.loadOlder(key) } }.buttonStyle(.borderless) }
-                    Spacer()
-                }
-                .listRowSeparator(.hidden)
-                .task { await store.loadOlder(key) }
-            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -311,6 +274,50 @@ struct MailboxView: View {
         }
         .task(id: conversation.messages.first?.id) { await loadFunctions() }
         .onDisappear { if store.visible == key { store.visible = nil } }
+    }
+
+    @ViewBuilder
+    private var rows: some View {
+        if let error = conversation.loadError {
+            VStack(alignment: .leading, spacing: 8) {
+                ErrorNote(message: error)
+                Button("Try again") { Task { await store.loadLatest(key) } }
+            }
+        }
+        if let error { ErrorNote(message: error) { self.error = nil } }
+        ForEach(mail) { message in
+            Button { opened = message.id } label: {
+                MailRow(message: message, showsRecipients: role.showsRecipients)
+            }
+            .buttonStyle(.plain)
+            .swipeActions(edge: .leading) {
+                if let email = message.email {
+                    Button(email.read ? "Unread" : "Read", systemImage: email.read ? "envelope.badge" : "envelope.open") {
+                        act(email.read ? "mark_unread" : "mark_read", message)
+                    }.tint(.blue)
+                }
+            }
+            .swipeActions(edge: .trailing) {
+                if functions.contains(where: { $0.id == "trash" }) {
+                    Button("Trash", systemImage: "trash", role: .destructive) { act("trash", message) }
+                }
+                if let email = message.email {
+                    Button(email.starred ? "Unstar" : "Star", systemImage: email.starred ? "star.slash" : "star") {
+                        act(email.starred ? "unstar" : "star", message)
+                    }.tint(.orange)
+                }
+            }
+        }
+        if search.isEmpty, !conversation.reachedStart, conversation.olderCursor != nil, !conversation.messages.isEmpty {
+            HStack {
+                Spacer()
+                if conversation.isLoadingOlder { ProgressView() }
+                else { Button("Load more") { Task { await store.loadOlder(key) } }.buttonStyle(.borderless) }
+                Spacer()
+            }
+            .listRowSeparator(.hidden)
+            .task { await store.loadOlder(key) }
+        }
     }
 
     @ViewBuilder

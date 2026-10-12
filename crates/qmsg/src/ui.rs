@@ -38,6 +38,8 @@ pub struct State {
     help: bool,
     pub demo: bool,
     loading_older: bool,
+    login: Option<LoginForm>,
+    login_busy: bool,
 }
 impl Default for State {
     fn default() -> Self {
@@ -54,6 +56,8 @@ impl Default for State {
             help: false,
             demo: false,
             loading_older: false,
+            login: None,
+            login_busy: false,
         }
     }
 }
@@ -86,10 +90,10 @@ impl State {
         self.timeline = Timeline::default();
         self.scroll = 0;
         self.loading_older = false;
-        if let Some(room) = self.selected() {
-            if !self.demo {
-                self.queue(tx, Request::Select(room.target));
-            }
+        if let Some(room) = self.selected()
+            && !self.demo
+        {
+            self.queue(tx, Request::Select(room.target));
         }
     }
     fn queue(&mut self, tx: &Sender<Request>, request: Request) -> bool {
@@ -102,8 +106,23 @@ impl State {
     }
     pub fn update(&mut self, update: Update, tx: &Sender<Request>) {
         match update {
+            Update::LoginForm(provider, function) => {
+                self.login = Some(LoginForm {
+                    provider,
+                    values: vec![String::new(); function.inputs.len()],
+                    function,
+                    field: 0,
+                });
+                self.login_busy = false;
+            }
+            Update::LoginDone => {
+                self.login_busy = false;
+                self.status = "Sign-in step complete".into();
+                self.queue(tx, Request::Refresh);
+            }
             Update::Connected => self.status = "Connected · refreshing every 3 seconds".into(),
             Update::Error(error) => {
+                self.login_busy = false;
                 self.status = error;
                 self.loading_older = false;
             }
@@ -149,12 +168,53 @@ impl State {
         if key == Key::Ctrl('c') || key == Key::Ctrl('q') {
             return false;
         }
+        if self.login.is_some() {
+            if key == Key::Esc {
+                self.login = None;
+                return true;
+            }
+            if key == Key::Char('\n') {
+                let form = self.login.as_ref().unwrap();
+                match form.arguments() {
+                    Ok(arguments) => {
+                        let request = Request::SubmitLogin(
+                            form.provider.clone(),
+                            form.function.clone(),
+                            arguments,
+                        );
+                        if self.queue(tx, request) {
+                            self.login = None;
+                            self.login_busy = true;
+                            self.status = "Signing in… browser links appear here when ready".into();
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            } else {
+                self.login.as_mut().unwrap().key(key);
+            }
+            return true;
+        }
         if self.help {
             self.help = false;
             return true;
         }
         match key {
             Key::F(1) => self.help = true,
+            Key::Ctrl('l') if !self.demo && !self.login_busy => {
+                if let Some(provider) = self.providers.get(self.account) {
+                    if let ProviderStatus::LoginRequired(step) = &provider.status {
+                        if let Some(function) = &step.function {
+                            self.login_busy = self.queue(
+                                tx,
+                                Request::Login(provider.provider.clone(), function.clone()),
+                            );
+                        }
+                    } else {
+                        self.status = "This account does not need sign-in".into();
+                    }
+                }
+            }
             Key::Char('\t') => {
                 self.focus = match self.focus {
                     Focus::Accounts => Focus::Channels,
@@ -266,10 +326,10 @@ impl State {
         if self.demo || self.loading_older {
             return;
         }
-        if let (Some(room), Some(cursor)) = (self.selected(), self.timeline.cursor.clone()) {
-            if self.queue(tx, Request::Older(room.target, cursor)) {
-                self.loading_older = true;
-            }
+        if let (Some(room), Some(cursor)) = (self.selected(), self.timeline.cursor.clone())
+            && self.queue(tx, Request::Older(room.target, cursor))
+        {
+            self.loading_older = true;
         }
     }
     pub fn view(&self, size: TerminalSize) -> Vec<Node> {
@@ -405,21 +465,21 @@ impl State {
         );
         let content_w = width - 4;
         let mut lines: Vec<(String, Color)> = Vec::new();
-        if let Some(provider) = self.providers.get(self.account) {
-            if let ProviderStatus::LoginRequired(step) = &provider.status {
-                for line in wrap(&step.message, content_w as usize) {
+        if let Some(provider) = self.providers.get(self.account)
+            && let ProviderStatus::LoginRequired(step) = &provider.status
+        {
+            for line in wrap(&step.message, content_w as usize) {
+                lines.push((line, ACCENT));
+            }
+            if let Some(url) = &step.link {
+                for line in wrap(url, content_w as usize) {
                     lines.push((line, ACCENT));
                 }
-                if let Some(url) = &step.link {
-                    for line in wrap(url, content_w as usize) {
-                        lines.push((line, ACCENT));
-                    }
-                }
-                lines.push((
-                    "Complete provider sign-in from the host or another client.".into(),
-                    MUTED,
-                ));
             }
+            lines.push((
+                "Press Ctrl+L to sign in. Open browser links in your browser.".into(),
+                MUTED,
+            ));
         }
         if let Some(room) = &selected {
             if let Some(topic) = &room.channel.topic {
@@ -549,13 +609,91 @@ impl State {
             MUTED,
             BG,
         ));
-        nodes.push(text(" Tab panes  ↑↓ select  i write  PgUp/PgDn history  Ctrl+R refresh  F1 help  Ctrl+Q quit", 0, h - 1, w, 1, ACCENT, PANEL));
+        nodes.push(text(
+            " Tab panes  ↑↓ select  i write  PgUp/PgDn history  Ctrl+L login  F1 help  Ctrl+Q quit",
+            0,
+            h - 1,
+            w,
+            1,
+            ACCENT,
+            PANEL,
+        ));
         if self.help {
             let mw = 56.min(w - 4);
             let mx = (w - mw) / 2;
             let my = (h - 13) / 2;
             panel(&mut nodes, " Keyboard help ", mx, my, mw, 13, true);
-            nodes.push(text("Tab / Shift+Tab    Next / previous pane\n↑ / ↓              Select account or channel\nEnter / i          Write in selected channel\nEnter              Send message\nAlt+Enter          New line\nBackspace / Ctrl+U Delete character / clear draft\nPgUp / PgDn        Scroll and load older messages\nEnd                Return to latest messages\nCtrl+R             Refresh from server\nEsc                Focus channels\nCtrl+Q / Ctrl+C    Quit · any key closes help", mx + 2, my + 1, mw - 4, 11, INK, PANEL));
+            nodes.push(text("Tab / Shift+Tab    Next / previous pane\n↑ / ↓              Select account or channel\nEnter / i          Write in selected channel\nEnter              Send message\nAlt+Enter          New line\nBackspace / Ctrl+U Delete character / clear draft\nPgUp / PgDn        Scroll and load older messages\nEnd                Return to latest messages\nCtrl+R / Ctrl+L    Refresh / sign in\nEsc                Focus channels\nCtrl+Q / Ctrl+C    Quit · any key closes help", mx + 2, my + 1, mw - 4, 11, INK, PANEL));
+        }
+        if let Some(form) = &self.login {
+            let mw = 60.min(w - 4);
+            let mh = (form.function.inputs.len() as u16 * 2 + 5).min(h - 4);
+            let mx = (w - mw) / 2;
+            let my = (h - mh) / 2;
+            panel(
+                &mut nodes,
+                &format!(" {} ", form.function.label),
+                mx,
+                my,
+                mw,
+                mh,
+                true,
+            );
+            nodes.push(text(
+                "Tab changes field · Enter submits · Esc cancels",
+                mx + 2,
+                my + 1,
+                mw - 4,
+                1,
+                MUTED,
+                PANEL,
+            ));
+            let count = usize::from(mh.saturating_sub(4) / 2);
+            let start = form.field.saturating_sub(count.saturating_sub(1));
+            for (row, (index, field)) in form
+                .function
+                .inputs
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(count)
+                .enumerate()
+            {
+                let value = if matches!(field.hint, qmsg_types::InputHint::Secret) {
+                    "•".repeat(form.values[index].graphemes(true).count())
+                } else {
+                    form.values[index].clone()
+                };
+                nodes.push(text(
+                    &format!("{}{}", field.label, if field.required { " *" } else { "" }),
+                    mx + 2,
+                    my + 2 + row as u16 * 2,
+                    mw - 4,
+                    1,
+                    MUTED,
+                    PANEL,
+                ));
+                nodes.push(text(
+                    &format!("{value}{}", if index == form.field { "▏" } else { "" }),
+                    mx + 2,
+                    my + 3 + row as u16 * 2,
+                    mw - 4,
+                    1,
+                    INK,
+                    if index == form.field { SELECT } else { PANEL },
+                ));
+            }
+            if form.function.inputs.is_empty() {
+                nodes.push(text(
+                    "Press Enter to start sign-in.",
+                    mx + 2,
+                    my + 2,
+                    mw - 4,
+                    1,
+                    ACCENT,
+                    PANEL,
+                ));
+            }
         }
         nodes
     }
@@ -567,13 +705,6 @@ fn text(value: &str, x: u16, y: u16, w: u16, h: u16, color: Color, bg: Color) ->
         .into()
 }
 fn panel(nodes: &mut Vec<Node>, title: &str, x: u16, y: u16, w: u16, h: u16, focused: bool) {
-    let safe: String = title.chars().filter(|c| !c.is_control()).collect();
-    // Border titles in fxcode are character-based, so keep their width bounded.
-    let title: String = safe
-        .chars()
-        .map(|c| if c.width().unwrap_or(0) > 1 { '?' } else { c })
-        .take(w.saturating_sub(4) as usize)
-        .collect();
     nodes.push(
         Container::new()
             .style(
@@ -582,12 +713,15 @@ fn panel(nodes: &mut Vec<Node>, title: &str, x: u16, y: u16, w: u16, h: u16, foc
                     .width(w)
                     .height(h)
                     .background(PANEL)
-                    .border(Border::plain(if focused { ACCENT } else { EDGE }).title(title)),
+                    .border(
+                        Border::plain(if focused { ACCENT } else { EDGE })
+                            .title(title)
+                            .title_color(if focused { ACCENT } else { MUTED }),
+                    ),
             )
             .into(),
     );
 }
-use unicode_width::UnicodeWidthChar;
 pub fn wrap(value: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![];
@@ -614,4 +748,196 @@ pub fn wrap(value: &str, width: usize) -> Vec<String> {
         lines.push(row);
     }
     lines
+}
+
+struct LoginForm {
+    provider: crate::model::ProviderId,
+    function: qmsg_types::Function,
+    values: Vec<String>,
+    field: usize,
+}
+impl LoginForm {
+    fn key(&mut self, key: Key) {
+        if self.values.is_empty() {
+            return;
+        }
+        match key {
+            Key::Char('\t') | Key::Down => self.field = (self.field + 1) % self.values.len(),
+            Key::BackTab | Key::Up => {
+                self.field = (self.field + self.values.len() - 1) % self.values.len()
+            }
+            Key::Backspace => {
+                let value = &mut self.values[self.field];
+                if let Some((offset, _)) = value.grapheme_indices(true).next_back() {
+                    value.truncate(offset);
+                }
+            }
+            Key::Ctrl('u') => self.values[self.field].clear(),
+            Key::Char(c) if !c.is_control() && self.values[self.field].len() < 16 * 1024 => {
+                self.values[self.field].push(c)
+            }
+            _ => {}
+        }
+    }
+    fn arguments(&self) -> Result<qmsg_types::Arguments, String> {
+        use qmsg_types::{InputHint, Value, ValueType};
+        let mut arguments = qmsg_types::Arguments::new();
+        for (field, raw) in self.function.inputs.iter().zip(&self.values) {
+            if raw.is_empty() && !field.required {
+                continue;
+            }
+            let value = if let InputHint::Choices(choices) = &field.hint {
+                choices
+                    .iter()
+                    .find(|c| c.label == *raw)
+                    .map(|c| c.value.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: choose {}",
+                            field.label,
+                            choices
+                                .iter()
+                                .map(|c| c.label.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?
+            } else {
+                match field.value_type {
+                    ValueType::Text => Value::Text(raw.clone()),
+                    ValueType::Boolean => Value::Boolean(
+                        raw.parse()
+                            .map_err(|_| format!("{}: enter true or false", field.label))?,
+                    ),
+                    ValueType::Integer => Value::Integer(
+                        raw.parse()
+                            .map_err(|_| format!("{}: enter a whole number", field.label))?,
+                    ),
+                    _ => {
+                        return Err(format!(
+                            "{}: this input type is not supported in the terminal yet",
+                            field.label
+                        ));
+                    }
+                }
+            };
+            arguments.insert(field.id.clone(), value);
+        }
+        self.function.check(&arguments).map_err(|issues| {
+            issues
+                .into_iter()
+                .map(|i| i.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        Ok(arguments)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{client::Update, demo_state};
+    use qmsg_types::{HistoryPage, Message};
+
+    #[test]
+    fn drafts_stay_with_their_channel() {
+        let mut state = demo_state();
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('é'), &tx);
+        state.key(Key::Esc, &tx);
+        state.key(Key::Down, &tx);
+        assert_eq!(state.draft(), "");
+        state.key(Key::Up, &tx);
+        assert_eq!(state.draft(), "é");
+    }
+
+    #[test]
+    fn stale_history_cannot_replace_another_channel() {
+        let mut state = demo_state();
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let old = state.selected().unwrap().target;
+        state.key(Key::Down, &tx);
+        let page = HistoryPage {
+            messages: vec![Message::new("old", old.channel.clone(), "user", 0, vec![])],
+            next_cursor: None,
+        };
+        state.update(Update::History(old, page, false), &tx);
+        assert!(state.timeline.messages.is_empty());
+    }
+
+    #[test]
+    fn failed_send_preserves_draft_and_success_clears_only_its_channel() {
+        let mut state = demo_state();
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let target = state.selected().unwrap().target;
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('x'), &tx);
+        state.update(Update::SendFailed(target.clone(), "offline".into()), &tx);
+        assert_eq!(state.draft(), "x");
+        state.key(Key::Esc, &tx);
+        state.key(Key::Down, &tx);
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('y'), &tx);
+        state.update(Update::Sent(target), &tx);
+        assert_eq!(state.draft(), "y");
+        state.key(Key::Esc, &tx);
+        state.key(Key::Up, &tx);
+        assert_eq!(state.draft(), "");
+    }
+
+    #[test]
+    fn unicode_wrap_and_backspace_keep_graphemes_whole() {
+        assert_eq!(wrap("a界e\u{301}", 3), vec!["a界", "e\u{301}"]);
+        assert_eq!(wrap("\x1bhello\r", 20), vec!["hello"]);
+        let mut state = demo_state();
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('e'), &tx);
+        state.key(Key::Char('\u{301}'), &tx);
+        state.key(Key::Backspace, &tx);
+        assert!(state.draft().is_empty());
+    }
+
+    #[test]
+    fn all_sizes_render_without_underflow() {
+        let state = demo_state();
+        for (cols, rows) in [(0, 0), (1, 1), (59, 15), (60, 16), (80, 24), (140, 45)] {
+            let size = TerminalSize {
+                cols,
+                rows,
+                ..TerminalSize::default()
+            };
+            let mut renderer =
+                fxcode::Renderer::with_kitty(Vec::new(), size, fxcode::KittyMode::Disabled);
+            renderer.draw(&state.view(size)).unwrap();
+        }
+    }
+
+    #[test]
+    fn login_masks_secrets_and_checks_choices() {
+        use qmsg_types::*;
+        let mut state = demo_state();
+        let mut function = Function::action("login", "Sign in", ActionKind::Login);
+        let mut field = FunctionInput::new("password", "Password", ValueType::Text);
+        field.hint = InputHint::Secret;
+        function.inputs.push(field);
+        state.login = Some(LoginForm {
+            provider: state.providers[0].provider.clone(),
+            function,
+            values: vec!["dont-display-this".into()],
+            field: 0,
+        });
+        let tree = state.view(TerminalSize {
+            cols: 100,
+            rows: 30,
+            ..TerminalSize::default()
+        });
+        assert!(!format!("{tree:?}").contains("dont-display-this"));
+        assert_eq!(
+            state.login.as_ref().unwrap().arguments().unwrap()["password"],
+            Value::Text("dont-display-this".into())
+        );
+    }
 }

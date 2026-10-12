@@ -116,7 +116,8 @@ fn terminal(
 fn demo_state() -> ui::State {
     use model::*;
     use qmsg_types::*;
-    let channel = Channel::new("general", "general", ChannelKind::Text);
+    let mut channel = Channel::new("general", "general", ChannelKind::Text);
+    channel.position = Some(0);
     let mut scope = Scope::default();
     scope.channels.insert(channel.id.clone(), channel);
     scope.channels.insert(

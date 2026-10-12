@@ -1,6 +1,7 @@
+use crate::model::ProviderId;
 use crate::model::{Snapshot, Target};
 use anyhow::{Context, Result, bail};
-use qmsg_types::{Command, Content, HistoryPage, Reply};
+use qmsg_types::{Arguments, ChannelRef, Content, Function, FunctionContext, HistoryPage, Reply};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -13,6 +14,30 @@ pub mod wire {
     tonic::include_proto!("qmsg.app.v1");
 }
 use wire::app_client::AppClient;
+
+// The app API omits provider request ids and flattens function calls.
+#[derive(Serialize)]
+enum Command {
+    Functions {
+        context: FunctionContext,
+    },
+    Call {
+        function: String,
+        context: FunctionContext,
+        arguments: Arguments,
+    },
+    History {
+        channel: ChannelRef,
+        cursor: Option<String>,
+        limit: u32,
+    },
+    Send {
+        channel: ChannelRef,
+        reply_to: Option<String>,
+        content: Vec<Content>,
+        nonce: Option<String>,
+    },
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct Credentials {
@@ -143,6 +168,8 @@ pub enum Request {
     Older(Target, String),
     Send(Target, String),
     Refresh,
+    Login(ProviderId, String),
+    SubmitLogin(ProviderId, Function, Arguments),
 }
 pub enum Update {
     Snapshot(Snapshot),
@@ -151,7 +178,10 @@ pub enum Update {
     SendFailed(Target, String),
     Error(String),
     Connected,
+    LoginForm(ProviderId, Function),
+    LoginDone,
 }
+#[derive(Clone)]
 struct Client {
     rpc: AppClient<Channel>,
     token: String,
@@ -170,11 +200,17 @@ impl Client {
         let data = self.rpc.snapshot(request).await?.into_inner();
         Ok(serde_json::from_str(&data.json)?)
     }
-    async fn execute(&mut self, target: &Target, command: Command, action: bool) -> Result<Reply> {
-        let request = self.request(wire::ExecuteRequest {
+    async fn execute(
+        &mut self,
+        provider: &ProviderId,
+        command: Command,
+        action: bool,
+    ) -> Result<Reply> {
+        let login = matches!(command, Command::Call { .. });
+        let mut request = self.request(wire::ExecuteRequest {
             provider: Some(wire::Provider {
-                name: target.provider.name.clone(),
-                instance: target.provider.instance,
+                name: provider.name.clone(),
+                instance: provider.instance,
             }),
             command_json: serde_json::to_string(&command)?,
             operation_id: if action {
@@ -183,8 +219,11 @@ impl Client {
                 String::new()
             },
             created_at_ms: if action { now() } else { 0 },
-            timeout_ms: 25_000,
+            timeout_ms: if login { 850_000 } else { 25_000 },
         })?;
+        if login {
+            request.set_timeout(Duration::from_secs(860));
+        }
         match self.rpc.execute(request).await?.into_inner().result {
             Some(wire::outcome::Result::Reply(data)) => Ok(serde_json::from_str(&data.json)?),
             Some(wire::outcome::Result::ErrorJson(error)) => bail!("{error}"),
@@ -194,9 +233,8 @@ impl Client {
     async fn history(&mut self, target: &Target, cursor: Option<String>) -> Result<HistoryPage> {
         match self
             .execute(
-                target,
+                &target.provider,
                 Command::History {
-                    request: 0,
                     channel: target.channel.clone(),
                     cursor,
                     limit: 50,
@@ -216,6 +254,7 @@ pub async fn run(
     updates: std::sync::mpsc::Sender<Update>,
 ) {
     let mut selected = None;
+    let mut login_task: Option<tokio::task::JoinHandle<()>> = None;
     loop {
         let rpc = match connect(&credentials).await {
             Ok(rpc) => rpc,
@@ -258,13 +297,35 @@ pub async fn run(
                         let _ = updates.send(Update::History(target, page, true));
                     }
                     Some(Request::Send(target, text)) => {
-                        let command = Command::Send { request: 0, channel: target.channel.clone(), reply_to: None,
+                        let command = Command::Send { channel: target.channel.clone(), reply_to: None,
                             content: vec![Content::Text(text)], nonce: Some(uuid::Uuid::new_v4().to_string()) };
-                        match client.execute(&target, command, true).await {
+                        match client.execute(&target.provider, command, true).await {
                             Ok(Reply::Sent { .. }) => { let _ = updates.send(Update::Sent(target)); }
                             Ok(_) => { let _ = updates.send(Update::SendFailed(target, "Unexpected send reply; delivery is unknown. Check history before trying again.".into())); }
                             Err(error) => { let _ = updates.send(Update::SendFailed(target, format!("{error}. Check history before trying again; delivery may be unknown."))); }
                         }
+                    }
+                    Some(Request::Login(provider, function)) => {
+                        match client.execute(&provider, Command::Functions { context: FunctionContext::Provider }, false).await? {
+                            Reply::Functions(functions) => {
+                                let function = functions.into_iter().find(|f| f.id == function && matches!(f.kind, qmsg_types::FunctionKind::Action { action: qmsg_types::ActionKind::Login, .. })).context("Login function is no longer available")?;
+                                let _ = updates.send(Update::LoginForm(provider, function));
+                            }
+                            _ => bail!("Unexpected function reply"),
+                        }
+                    }
+                    Some(Request::SubmitLogin(provider, function, arguments)) => {
+                        anyhow::ensure!(!login_task.as_ref().is_some_and(|task| !task.is_finished()), "A sign-in is already running");
+                        // Browser sign-in can take minutes. Keep snapshots and keys live.
+                        let mut client = client.clone();
+                        let updates = updates.clone();
+                        login_task = Some(tokio::spawn(async move {
+                            let result = client.execute(&provider, Command::Call { function: function.id, context: FunctionContext::Provider, arguments }, true).await;
+                            let _ = updates.send(match result {
+                                Ok(_) => Update::LoginDone,
+                                Err(error) => Update::Error(format!("Sign-in failed: {error}")),
+                            });
+                        }));
                     }
                     Some(Request::Refresh) | None => {
                         let snapshot = client.snapshot().await?;
@@ -277,13 +338,81 @@ pub async fn run(
                 }
                 Ok(())
             }.await;
-            if let Err(error) = result {
-                if updates.send(Update::Error(error.to_string())).is_err() {
-                    return;
-                }
+            if let Err(error) = result
+                && updates.send(Update::Error(error.to_string())).is_err()
+            {
+                return;
             }
             if requests.is_closed() {
                 return;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn refuses_remote_plaintext_before_connecting() {
+        let credentials = Credentials {
+            endpoint: "http://192.0.2.1:50051".into(),
+            token: "secret".into(),
+            certificate_pem: None,
+        };
+        assert!(
+            connect(&credentials)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Plaintext")
+        );
+    }
+    #[test]
+    fn commands_match_published_app_fields() {
+        // Validate names against the checked-in server contract, not provider Command.
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../qmsg-orchestrator/proto/schema/command.json"
+        ))
+        .unwrap();
+        let commands = [
+            Command::History {
+                channel: ChannelRef::new(None, "a"),
+                cursor: None,
+                limit: 50,
+            },
+            Command::Send {
+                channel: ChannelRef::new(None, "a"),
+                reply_to: None,
+                content: vec![],
+                nonce: None,
+            },
+            Command::Functions {
+                context: FunctionContext::Provider,
+            },
+            Command::Call {
+                function: "login".into(),
+                context: FunctionContext::Provider,
+                arguments: Arguments::new(),
+            },
+        ];
+        for command in commands {
+            let value = serde_json::to_value(command).unwrap();
+            let (name, body) = value.as_object().unwrap().iter().next().unwrap();
+            let variant = schema["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["properties"].get(name).is_some())
+                .unwrap();
+            let fields = variant["properties"][name]["properties"]
+                .as_object()
+                .unwrap();
+            for key in body.as_object().unwrap().keys() {
+                assert!(fields.contains_key(key), "{name}.{key} is not an app field");
+            }
+            for required in variant["properties"][name]["required"].as_array().unwrap() {
+                assert!(body.get(required.as_str().unwrap()).is_some());
             }
         }
     }

@@ -93,3 +93,41 @@ impl Timeline {
         self.cursor = page.next_cursor;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn overlapping_older_pages_keep_current_message_version() {
+        let channel = ChannelRef::new(None, "test");
+        let message = |id: &str, body: &str| {
+            Message::new(
+                id,
+                channel.clone(),
+                "me",
+                0,
+                vec![qmsg_types::Content::Text(body.into())],
+            )
+        };
+        let mut timeline = Timeline {
+            messages: vec![message("2", "edited"), message("3", "new")],
+            cursor: None,
+        };
+        timeline.prepend(qmsg_types::HistoryPage {
+            messages: vec![message("1", "old"), message("2", "before edit")],
+            next_cursor: Some("cursor".into()),
+        });
+        assert_eq!(
+            timeline
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1", "2", "3"]
+        );
+        assert_eq!(
+            timeline.messages[1].content,
+            vec![qmsg_types::Content::Text("edited".into())]
+        );
+    }
+}

@@ -1154,7 +1154,7 @@ dependencies = [
 [[package]]
 name = "fxcode"
 version = "0.1.0"
-source = "git+https://github.com/IGN-Styly/fxcode?branch=feat%2Ftext-widget#11132ff69167386aa166040de1caf9ee97432ac9"
+source = "git+https://github.com/IGN-Styly/fxcode?rev=56525dd#56525dd95942cf7c463ba84522f3fbb208f19353"
 dependencies = [
  "image",
  "libc",

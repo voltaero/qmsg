@@ -3,6 +3,16 @@ import Testing
 @testable import QmsgKit
 
 @Suite struct ModelTests {
+    @Test func directChatTitleFollowsItsRecipientsProfile() {
+        var dm = channel("3100")
+        dm.kind = .direct
+        dm.name = "1002"
+        dm.members = ["1001", "1002"]
+        var scope = Scope(me: "1001", users: ["1002": User(id: "1002", name: "Ana", username: "ana.dev")])
+        #expect(scope.title(of: dm) == "Ana")
+        scope.users["1002"]?.name = "Ana Smith"
+        #expect(scope.title(of: dm) == "Ana Smith")
+    }
     @MainActor @Test func mailWithTheSameDateUsesNumericUIDOrder() throws {
         let nine = try mail("1:9", read: false, html: nil, contentIDs: [:])
         let ten = try mail("1:10", read: false, html: nil, contentIDs: [:])

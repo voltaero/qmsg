@@ -605,6 +605,7 @@ func (p *provider) openChannel(ctx context.Context, org *string, members []strin
 	if cerr != nil {
 		return qmsg.ChannelRef{}, commandError(cerr, nil)
 	}
+	ch = resolveDMRecipients(st, ch)
 	for _, u := range ch.DMRecipients {
 		p.knowUser(nil, u)
 	}

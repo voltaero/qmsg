@@ -309,6 +309,7 @@ func (p *provider) sync(st *ningen.State) {
 	p.knowUser(nil, *me)
 	if dms, err := st.Cabinet.PrivateChannels(); err == nil {
 		for _, ch := range dms {
+			ch = resolveDMRecipients(st, ch)
 			for _, u := range ch.DMRecipients {
 				p.knowUser(nil, u)
 			}
@@ -579,6 +580,7 @@ func (p *provider) handleEvents(st *ningen.State, lost chan<- error) {
 		if !live() {
 			return
 		}
+		ch = resolveDMRecipients(st, ch)
 		if ch.GuildID.IsValid() && !p.can(st, ch, discord.PermissionViewChannel) {
 			p.cx.Directory(qmsg.ChannelRemoved{Channel: channelRef(ch.GuildID, ch.ID)})
 			return

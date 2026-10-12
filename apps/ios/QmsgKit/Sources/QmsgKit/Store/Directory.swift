@@ -205,6 +205,14 @@ extension Scope {
     /// A display name for a channel: its name, or for a direct or group
     /// conversation without one, its other members.
     public func title(of channel: Channel) -> String {
+        if channel.kind == .direct {
+            let names = (channel.members ?? []).filter { $0 != me }.compactMap { id -> String? in
+                guard users[id] != nil else { return nil }
+                let name = userName(id)
+                return name == "Unknown user" ? nil : name
+            }
+            if !names.isEmpty { return names.joined(separator: ", ") }
+        }
         if !channel.name.isEmpty { return channel.name }
         let others = (channel.members ?? []).filter { $0 != me }.map { userName($0) }
         return others.isEmpty ? channel.id : others.joined(separator: ", ")

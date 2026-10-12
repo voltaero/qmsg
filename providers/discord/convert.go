@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/diamondburned/arikawa/v3/discord"
+	"github.com/diamondburned/ningen/v3"
 	qmsg "github.com/voltaero/qmsg/sdk/go"
 )
 
@@ -78,6 +79,35 @@ func userName(u discord.User) string {
 	default:
 		return u.ID.String()
 	}
+}
+
+func resolveDMRecipients(st *ningen.State, ch discord.Channel) discord.Channel {
+	if len(ch.DMRecipients) == 0 {
+		return ch
+	}
+	ch.DMRecipients = append([]discord.User(nil), ch.DMRecipients...)
+	indices := map[discord.UserID]int{}
+	for i, user := range ch.DMRecipients {
+		indices[user.ID] = i
+	}
+	// READY can deduplicate recipients into the global user cache. Read that
+	// cache under its lock and enrich a copy, never the shared channel slice.
+	st.PresenceStore.Each(0, func(presence *discord.Presence) bool {
+		if i, found := indices[presence.User.ID]; found {
+			user := &ch.DMRecipients[i]
+			if user.Username == "" {
+				user.Username = presence.User.Username
+			}
+			if user.DisplayName == "" {
+				user.DisplayName = presence.User.DisplayName
+			}
+			if user.Avatar == "" {
+				user.Avatar = presence.User.Avatar
+			}
+		}
+		return false
+	})
+	return ch
 }
 
 func memberName(m discord.Member) string {

@@ -104,14 +104,17 @@ final class PastingTextView: UITextView {
     }
 
     /// The image in a pasteboard item, keeping its original encoding when
-    /// the pasteboard has it, so GIFs stay animated.
+    /// the pasteboard has it, so GIFs stay animated. Other formats, such as
+    /// HEIC, become JPEG or PNG, as photos from the library do, since few
+    /// networks take them.
     static func image(in item: [String: Any], number: Int) -> QmsgStore.Attachment? {
         let types = item.keys.compactMap { UTType($0) }.filter { $0.conforms(to: .image) }
         let preferred = types.sorted { rank($0) < rank($1) }
         for type in preferred {
             let found: (data: Data, type: UTType)?
             switch item[type.identifier] {
-            case let data as Data: found = (data, type)
+            case let data as Data where [UTType.gif, .png, .jpeg].contains(type): found = (data, type)
+            case let data as Data: found = UIImage(data: data).flatMap(encode)
             case let image as UIImage: found = encode(image)
             default: found = nil
             }

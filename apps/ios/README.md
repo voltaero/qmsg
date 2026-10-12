@@ -27,10 +27,10 @@ After installation, open qmsg on the phone. xtool may add its signing-team
 prefix to the installed bundle ID.
 
 You can reuse a configured xtool state directory instead of logging in and
-importing the SDK again. On Claudio's machine:
+importing the SDK again. Point `QMSG_IOS_STATE` at it:
 
 ```sh
-QMSG_IOS_STATE="$HOME/.local/share/tub-xtool" apps/ios/xtool.sh dev run --usb
+QMSG_IOS_STATE="$HOME/.local/share/other-xtool" apps/ios/xtool.sh dev run --usb
 ```
 
 `QMSG_IOS_IMAGE` can select another prepared image. `Package.swift` and

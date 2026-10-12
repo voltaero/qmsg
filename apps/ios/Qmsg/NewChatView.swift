@@ -166,6 +166,12 @@ struct NewChatView: View {
         do {
             try await Task.sleep(for: .milliseconds(200))
             if function == nil { function = try await store.functions(context, provider: provider).first { $0.action == .openChannel } }
+            if function == nil && !organization.isEmpty {
+                // Some networks, such as Discord, open chats only outside a
+                // server, and find its members from the account too.
+                organization = ""
+                return
+            }
             guard let function, let input = membersInput else { contacts = []; return }
             let items = try await store.complete(function, input: input, context: context, arguments: [:], query: query, provider: provider)
             try Task.checkCancellation()

@@ -443,14 +443,7 @@ struct ChatView: View {
         if let max = channel.limits.maxAttachments, attachments.count > Int(max) { error = "Too many attachments."; return }
         var total = UInt64(trimmed.utf8.count)
         for file in attachments {
-            let kind: ContentKind
-            switch file.mime.split(separator: "/").first {
-            case "image": kind = .image
-            case "video": kind = .video
-            case "audio": kind = .audio
-            default: kind = .file
-            }
-            guard let rule = channel.rule(for: kind), rule.takes(mime: file.mime) else { error = "This channel doesn't take \(file.mime) files."; return }
+            guard let rule = channel.rule(for: file.kind), rule.takes(mime: file.mime) else { error = "This channel doesn't take \(file.mime) files."; return }
             if let max = rule.maxSize, UInt64(file.data.count) > max { error = "\(file.name) is too large."; return }
             total += UInt64(file.data.count)
         }

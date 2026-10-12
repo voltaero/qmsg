@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in to your account</title>
+<style>
+body { font: 16px system-ui; margin: 24px auto; max-width: 1050px; padding: 0 16px; }
+img { width: 100%; display: block; border: 1px solid #888; }
+[hidden] { display: none !important; }
+button, input { font: inherit; margin: 4px; padding: 8px; }
+input { width: 45%; }
+</style>
+<h1>Log in to your account</h1>
+<p>Click a field in the browser below, then type or paste your text here. Use the buttons for Enter and Tab. Login may ask for a code or CAPTCHA.</p>
+<p id="state" role="status">Starting browser…</p>
+<div id="controls">
+<input id="text" type="password" autocomplete="off" aria-label="Text to enter in the selected field">
+<button id="send">Enter text</button>
+<button data-key="Tab">Tab</button><button data-key="Shift+Tab">Back</button>
+<button data-key="Enter">Enter</button><button data-key="Backspace">Delete character</button>
+<button data-key="Control+A">Select all</button>
+<button id="up">Scroll up</button><button id="down">Scroll down</button>
+</div>
+<img id="frame" alt="Login browser. Click to select a field or button." hidden>
+<script>
+const base = location.pathname.replace(/\/$/, '');
+const frame = document.querySelector('#frame');
+const state = document.querySelector('#state');
+const controls = document.querySelector('#controls');
+let stopped = false, sending = false;
+async function input(body) {
+  if (stopped || sending) return;
+  sending = true;
+  try {
+    const response = await fetch(base + '/input', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body) });
+    if (!response.ok) state.textContent = 'Input did not arrive. Try again when the browser is ready.';
+  } finally { sending = false; }
+}
+frame.addEventListener('click', event => {
+  if (!frame.complete || frame.naturalWidth === 0) return;
+  const rect = frame.getBoundingClientRect();
+  input({ kind:'click', x:(event.clientX-rect.left)*frame.naturalWidth/rect.width, y:(event.clientY-rect.top)*frame.naturalHeight/rect.height });
+});
+document.querySelector('#send').onclick = () => {
+  const text = document.querySelector('#text');
+  const value = text.value;
+  text.value = '';
+  input({kind:'text', text:value});
+};
+document.querySelectorAll('[data-key]').forEach(button => button.onclick = () => input({kind:'key', key:button.dataset.key}));
+document.querySelector('#up').onclick = () => input({kind:'scroll', dy:-500});
+document.querySelector('#down').onclick = () => input({kind:'scroll', dy:500});
+async function refresh() {
+  try {
+    const response = await fetch(base + '/state');
+    if (!response.ok) { stopped = true; state.textContent = 'This login session has ended.'; }
+    else {
+      const status = (await response.json()).state;
+      state.textContent = status === 'active' ? 'Browser ready' : status === 'complete' ? 'Logged in. You can close this page.' : status;
+      stopped = !['starting','active'].includes(status);
+      if (status === 'active' && !sending) {
+        const shot = await fetch(base + '/frame');
+        if (shot.ok) {
+          const image = URL.createObjectURL(await shot.blob());
+          const old = frame.src;
+          frame.src = image;
+          frame.hidden = false;
+          frame.onload = () => { if (old.startsWith('blob:')) URL.revokeObjectURL(old); };
+        }
+      }
+    }
+  } catch { state.textContent = 'Connection lost. Trying again…'; }
+  if (stopped) { controls.hidden = true; frame.hidden = true; frame.removeAttribute('src'); }
+  else setTimeout(refresh, 700);
+}
+refresh();
+</script>
+</html>

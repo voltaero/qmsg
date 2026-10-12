@@ -1,0 +1,15 @@
+package qmsg:go-provider;
+
+// The qmsg provider world, plus the WASI interfaces the Go module calls
+// directly. A wasip1 module gets the rest through the preview1 adapter.
+world go-provider {
+  include qmsg:abi/provider@1.0.0;
+  import wasi:sockets/instance-network@0.2.12;
+  import wasi:sockets/tcp-create-socket@0.2.12;
+  import wasi:sockets/tcp@0.2.12;
+  import wasi:sockets/ip-name-lookup@0.2.12;
+  import wasi:io/streams@0.2.12;
+  import wasi:io/poll@0.2.12;
+  import wasi:io/error@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+}

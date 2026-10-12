@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::ProviderId;
 
-use qmsg_types::{Channel, ChannelRef, DirectoryUpdate, Message, Organization, User};
+use qmsg_types::{Channel, ChannelRef, DirectoryUpdate, Message, Organization, Presence, User};
 
 /// Organizations, users and channels by provider instance, kept up to date from
 /// [`ProviderEvent::Directory`](crate::ProviderEvent::Directory).
@@ -22,19 +22,21 @@ struct Entry {
 }
 
 /// An organization as the [`Directory`] keeps it.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct OrganizationEntry {
     pub id: String,
     pub name: String,
+    pub icon: Option<Box<qmsg_types::Media>>,
     pub scope: Scope,
 }
 
 /// The users and channels in an organization, or outside any.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Scope {
     me: Option<String>,
     users: BTreeMap<String, User>,
     channels: BTreeMap<String, Channel>,
+    presence: BTreeMap<String, Presence>,
 }
 
 impl Scope {
@@ -61,8 +63,22 @@ impl Scope {
         self.channels.get(id)
     }
 
+    /// The user's presence, if the provider reported one.
+    pub fn presence(&self, user: &str) -> Option<Presence> {
+        self.presence.get(user).copied()
+    }
+
+    pub fn presences(&self) -> impl Iterator<Item = (&str, Presence)> {
+        self.presence
+            .iter()
+            .map(|(id, presence)| (id.as_str(), *presence))
+    }
+
     fn is_empty(&self) -> bool {
-        self.me.is_none() && self.users.is_empty() && self.channels.is_empty()
+        self.me.is_none()
+            && self.users.is_empty()
+            && self.channels.is_empty()
+            && self.presence.is_empty()
     }
 }
 
@@ -170,6 +186,7 @@ impl Entry {
                 let Organization {
                     id,
                     name,
+                    icon,
                     me,
                     users,
                     channels,
@@ -178,13 +195,24 @@ impl Entry {
                     me,
                     users: users.into_iter().map(|u| (u.id.clone(), u)).collect(),
                     channels: channels.into_iter().map(|c| (c.id.clone(), c)).collect(),
+                    presence: BTreeMap::new(),
                 };
-                self.organizations
-                    .insert(id.clone(), OrganizationEntry { id, name, scope });
+                self.organizations.insert(
+                    id.clone(),
+                    OrganizationEntry {
+                        id,
+                        name,
+                        icon,
+                        scope,
+                    },
+                );
             }
-            DirectoryUpdate::OrganizationUpdated { id, name } => {
+            DirectoryUpdate::OrganizationUpdated { id, name, icon } => {
                 match self.organizations.get_mut(&id) {
-                    Some(organization) => organization.name = name,
+                    Some(organization) => {
+                        organization.name = name;
+                        organization.icon = icon;
+                    }
                     None => return Err(ApplyError::UnknownOrganization(id)),
                 }
             }
@@ -203,6 +231,7 @@ impl Entry {
                 if scope.users.remove(&id).is_none() {
                     return Err(ApplyError::UnknownUser(id));
                 }
+                scope.presence.remove(&id);
                 // The account is no longer there.
                 if scope.me.as_deref() == Some(id.as_str()) {
                     scope.me = None;
@@ -228,6 +257,16 @@ impl Entry {
             DirectoryUpdate::Me { organization, id } => {
                 self.scope_mut(organization)?.me = id;
             }
+            DirectoryUpdate::Presence {
+                organization,
+                user,
+                presence,
+            } => {
+                self.scope_mut(organization)?
+                    .presence
+                    .insert(user, presence);
+            }
+            DirectoryUpdate::Reset => *self = Entry::default(),
         }
         Ok(())
     }
@@ -260,6 +299,8 @@ mod tests {
         User {
             id: id.into(),
             name: name.into(),
+            username: None,
+            avatar: None,
         }
     }
 
@@ -274,6 +315,7 @@ mod tests {
             me: Some("ana".into()),
             users: vec![user("ana", "Ana")],
             channels: vec![channel("general", ChannelKind::Text)],
+            icon: None,
         }
     }
 
@@ -346,6 +388,7 @@ mod tests {
             DirectoryUpdate::OrganizationUpdated {
                 id: "org".into(),
                 name: "Renamed".into(),
+                icon: None,
             },
         )
         .unwrap();
@@ -358,6 +401,7 @@ mod tests {
                 DirectoryUpdate::OrganizationUpdated {
                     id: "nope".into(),
                     name: "x".into(),
+                    icon: None,
                 },
             ),
             Err(ApplyError::UnknownOrganization("nope".into()))
@@ -443,14 +487,13 @@ mod tests {
             None
         );
 
-        let message = Message {
-            id: "1".into(),
-            channel: dm_ref.clone(),
-            author: "ana".into(),
-            sent_at: 0,
-            reply_to: None,
-            content: vec![Content::Text("hi".into())],
-        };
+        let message = Message::new(
+            "1",
+            dm_ref.clone(),
+            "ana",
+            0,
+            vec![Content::Text("hi".into())],
+        );
         assert_eq!(
             d.author(&provider("p"), &message),
             Some(&user("ana", "Ana"))
@@ -514,6 +557,52 @@ mod tests {
             ),
             Err(ApplyError::UnknownChannel("nope".into()))
         );
+    }
+
+    #[test]
+    fn keeps_presence_and_forgets_everything_on_reset() {
+        let mut d = Directory::new();
+        let p = provider("p");
+        d.apply(&p, DirectoryUpdate::OrganizationUpserted(organization()))
+            .unwrap();
+        let presence = |user: &str, presence| DirectoryUpdate::Presence {
+            organization: org(),
+            user: user.into(),
+            presence,
+        };
+        d.apply(&p, presence("ana", Presence::Idle)).unwrap();
+        // Users that aren't reported yet can have one too.
+        d.apply(&p, presence("bo", Presence::Online)).unwrap();
+        let scope = d.scope(&p, Some("org")).unwrap();
+        assert_eq!(scope.presence("ana"), Some(Presence::Idle));
+        assert_eq!(scope.presence("bo"), Some(Presence::Online));
+        d.apply(
+            &p,
+            DirectoryUpdate::UserRemoved {
+                organization: org(),
+                id: "ana".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(d.scope(&p, Some("org")).unwrap().presence("ana"), None);
+
+        d.apply(
+            &p,
+            DirectoryUpdate::ChannelUpserted {
+                organization: None,
+                channel: channel("dm", ChannelKind::Direct),
+            },
+        )
+        .unwrap();
+        // A reconnecting provider resets, then sends a full snapshot.
+        d.apply(&p, DirectoryUpdate::Reset).unwrap();
+        assert_eq!(d.organizations(&p).count(), 0);
+        assert!(d.channel(&p, &ChannelRef::new(None, "dm")).is_none());
+        d.apply(&p, DirectoryUpdate::OrganizationUpserted(organization()))
+            .unwrap();
+        let scope = d.scope(&p, Some("org")).unwrap();
+        assert_eq!(scope.presence("bo"), None);
+        assert!(scope.channel("general").is_some());
     }
 
     #[test]

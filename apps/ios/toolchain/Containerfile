@@ -1,0 +1,20 @@
+# Swift 6.4 + xtool + usbmuxd, so iOS apps can be built and installed from Linux
+# without installing anything on the host.
+FROM docker.io/library/swift:6.4.0-jammy
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       ca-certificates curl zip usbmuxd libimobiledevice-utils libusb-1.0-0 libfuse2 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG XTOOL_VERSION=1.20.1
+RUN curl -fsSL -o /tmp/xtool.AppImage \
+       "https://github.com/xtool-org/xtool/releases/download/${XTOOL_VERSION}/xtool-x86_64.AppImage" \
+    && chmod +x /tmp/xtool.AppImage \
+    && cd /tmp && ./xtool.AppImage --appimage-extract >/dev/null \
+    && mv /tmp/squashfs-root /usr/local/xtool \
+    && ln -s /usr/local/xtool/AppRun /usr/local/bin/xtool \
+    && rm /tmp/xtool.AppImage
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

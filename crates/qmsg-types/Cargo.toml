@@ -5,4 +5,5 @@ edition.workspace = true
 
 [dependencies]
 postcard.workspace = true
+schemars = "1"
 serde.workspace = true

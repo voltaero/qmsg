@@ -1,0 +1,64 @@
+syntax = "proto3";
+package qmsg.app.v1;
+
+// JSON fields use the published qmsg app schema. IDs stay strings; clients
+// need no Rust/postcard decoder. Function forms and results remain extensible.
+service App {
+  rpc Pair(PairRequest) returns (Credential);
+  rpc Rotate(RotateRequest) returns (Credential);
+  rpc Devices(Empty) returns (DeviceList);
+  rpc Revoke(RevokeRequest) returns (Empty);
+  rpc ProviderCatalog(Empty) returns (Data);
+  rpc ConfigureProvider(ProviderConfiguration) returns (Empty);
+  rpc RemoveProvider(ProviderName) returns (Empty);
+  rpc Snapshot(Empty) returns (Data);
+  rpc Watch(WatchRequest) returns (stream Event);
+  rpc Execute(ExecuteRequest) returns (Outcome);
+  rpc Upload(stream UploadChunk) returns (Data);
+  rpc ReadBlob(ReadBlobRequest) returns (BlobChunk);
+  rpc ReleaseBlob(ReleaseBlobRequest) returns (Empty);
+}
+message Empty {}
+message PairRequest { string code = 1; string device_name = 2; }
+// Optional 32 random bytes as 64 lowercase hex characters. Persist it before
+// rotating, so a lost reply can be recovered by trying the proposed token.
+message RotateRequest { string replacement_secret = 1; }
+message Credential { string device_id = 1; string token = 2; uint64 expires_at_ms = 3; }
+message Device { string id = 1; string name = 2; uint64 expires_at_ms = 3; }
+message DeviceList { repeated Device devices = 1; }
+message RevokeRequest { string device_id = 1; }
+message Provider { string name = 1; uint64 instance = 2; }
+message Data { string json = 1; uint64 blob_expires_at_ms = 2; }
+message WatchRequest { string epoch = 1; uint64 after_sequence = 2; }
+message Event {
+  string epoch = 1;
+  uint64 sequence = 2;
+  oneof body { Data snapshot = 3; Data update = 4; bool heartbeat = 5; }
+}
+message ExecuteRequest {
+  Provider provider = 1;
+  string command_json = 2;
+  // Required for actions. Stable across retries, with the original timestamp.
+  string operation_id = 3;
+  uint64 created_at_ms = 4;
+  uint64 timeout_ms = 5;
+}
+message Outcome {
+  oneof result { Data reply = 1; string error_json = 2; }
+  string epoch = 3;
+  uint64 observed_sequence = 4;
+}
+message UploadChunk {
+  // First frame: metadata and optionally data. Later frames: data only.
+  Provider provider = 1;
+  string name = 2;
+  string mime = 3;
+  uint64 size = 4;
+  bytes data = 5;
+}
+message ReadBlobRequest { string id = 1; uint64 offset = 2; uint32 length = 3; }
+message BlobChunk { bytes data = 1; }
+message ReleaseBlobRequest { string id = 1; }
+
+message ProviderConfiguration { string name = 1; string type = 2; string label = 3; bool enabled = 4; string settings_json = 5; }
+message ProviderName { string name = 1; }

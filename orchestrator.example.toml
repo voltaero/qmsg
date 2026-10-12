@@ -4,9 +4,50 @@
 # the current directory instead.
 data_dir = ".qmsg"
 
+# The browser login service providers such as Discord sign in through. It is
+# started on the first browser login; these are the defaults, relative to the
+# repository root.
+# [browser]
+# command = ["bun", "src/bootstrap.ts"]
+# dir = "services/browser-login"
+# start_timeout = 30   # seconds
+# login_timeout = 900  # seconds
+# Users open the login page at this address. The default, the service's own
+# localhost address, only works on this machine. Behind a reverse proxy, fix
+# the port and forward <viewer_url>/view/ to http://127.0.0.1:<port>/view/,
+# The host configures its trusted public origin for viewer input. Never
+# forward /sessions.
+# port = 7300
+# viewer_url = "https://qmsg.example.com/browser"
+
+# Native app gRPC endpoint. Plain HTTP is allowed only on localhost, for
+# a local app or a secure tunnel that forwards this port.
+[app]
+listen = "127.0.0.1:50051"
+# endpoint = "http://localhost:50051" # Address as seen by the paired app.
+# For direct LAN access, create an identity with:
+# cargo run -p qmsg-orchestrator -- tls .qmsg qmsg.local 192.168.1.10
+# listen = "0.0.0.0:50051"
+# endpoint = "https://qmsg.local:50051"
+# certificate = ".qmsg/app-cert.pem"
+# private_key = ".qmsg/app-key.pem"
+
 [[provider]]
 name = "echo"
 wasm = "target/wasm32-wasip2/debug/qmsg_provider_echo.wasm"
 
 [provider.settings]
 server = "127.0.0.1:7000"
+
+# Email and Gmail OAuth settings: providers/email/README.md.
+# [[provider]]
+# name = "email"
+# wasm = "target/go/providers-email.wasm"
+# [provider.settings]
+# service = "imap"
+# address = "you@example.com"
+# imap_addr = "imap.example.com:993"
+# smtp_addr = "smtp.example.com:465"
+# smtp_tls = "tls"
+# sent_mailbox = "Sent"
+# trash_mailbox = "Trash"

@@ -184,6 +184,15 @@ impl Secrets {
         .map_err(|e| format!("writing secret: {e}"))
     }
 
+    pub(crate) fn clear(&self, provider: &str) -> Result<(), String> {
+        self.db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM secrets WHERE provider = ?1", params![provider])
+            .map(|_| ())
+            .map_err(|e| format!("removing account secrets: {e}"))
+    }
+
     pub(crate) fn delete(&self, provider: &str, key: &str) -> Result<(), String> {
         self.db
             .lock()
@@ -258,7 +267,7 @@ fn keychain() -> anyhow::Result<Arc<CredentialStore>> {
 
 /// Creates the data directory. On Unix only its owner can enter it, since
 /// secrets may be stored as plain text.
-fn create_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dir(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -288,7 +297,7 @@ fn lock(dir: &Path) -> anyhow::Result<File> {
 
 /// Makes the database readable only by its owner on Unix, since secrets may
 /// be stored as plain text.
-fn restrict(path: &Path) -> std::io::Result<()> {
+pub(crate) fn restrict(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};

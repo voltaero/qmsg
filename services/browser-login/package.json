@@ -1,0 +1,17 @@
+{
+  "name": "qmsg-browser-login",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/bootstrap.ts",
+    "test": "bun test",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "1.64.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}

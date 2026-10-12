@@ -144,7 +144,7 @@ address syntax; it cannot prove that an address exists or will accept mail.
 - 8 MiB encoded outgoing mail and incoming raw/decoded mail; 20 outgoing
   attachments, 100 recipients and 100 incoming MIME parts (including containers),
   with at most 30 nesting levels and 64 KiB in the main header.
-- History returns up to 20 header-only messages in arrival-date order, with
+- History returns up to 50 header-only messages in arrival-date order, with
   `Custom("email-summary")` in their content. Use `GetMessage` when opening one
   to fetch its body and attachments. Reply and move actions fetch headers only.
   Headers load in one IMAP request; bodies

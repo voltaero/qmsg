@@ -70,7 +70,7 @@ struct ChatView: View {
                             DaySeparator(date: message.date)
                         }
                         MessageRow(
-                            message: message, scope: scope, feed: isFeed,
+                            message: message, scope: scope,
                             reply: message.replyTo.flatMap { conversation.message($0) },
                             showsAuthor: startsGroup(message, after: previous),
                             react: { reaction in Task { await toggle(reaction, on: message) } }
@@ -163,7 +163,7 @@ struct ChatView: View {
         }
         .navigationTitle(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel)
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
+        .background(Color.appCanvas.ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Members", systemImage: "person.2") { showingMembers = true }
@@ -591,7 +591,6 @@ private struct PendingRow: View {
 private struct MessageRow: View {
     let message: Message
     let scope: Scope?
-    let feed: Bool
     let reply: Message?
     let showsAuthor: Bool
     let react: (Reaction) -> Void
@@ -599,33 +598,7 @@ private struct MessageRow: View {
     private var mine: Bool { message.author == scope?.me }
     private var author: String { scope?.userName(message.author) ?? "Unknown user" }
 
-    var body: some View {
-        if feed { feedRow } else { bubbleRow }
-    }
-
-    /// Avatar, name and time on one line, text aligned under the name.
-    private var feedRow: some View {
-        HStack(alignment: .top, spacing: 10) {
-            if showsAuthor { InitialsAvatar(name: author, size: 30, neutral: true) }
-            else { Color.clear.frame(width: 30, height: 1) }
-            VStack(alignment: .leading, spacing: 3) {
-                if showsAuthor {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(author).font(.subheadline.weight(.semibold))
-                            .foregroundStyle(mine ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                            .lineLimit(1)
-                        Text(message.date, style: .time).font(.caption2).foregroundStyle(.secondary)
-                        if message.editedAt != nil { Text("edited").font(.caption2).foregroundStyle(.tertiary) }
-                    }
-                }
-                replyQuote
-                messageContent
-                reactionsRow
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.top, showsAuthor ? 12 : 2)
-    }
+    var body: some View { bubbleRow }
 
     private var bubbleRow: some View {
         VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
@@ -649,7 +622,7 @@ private struct MessageRow: View {
             }
             .font(.caption)
             .padding(.leading, 8)
-            .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(mine && !feed ? Color.white.opacity(0.7) : Color.secondary.opacity(0.5)).frame(width: 2) }
+            .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(mine ? Color.white.opacity(0.7) : Color.secondary.opacity(0.5)).frame(width: 2) }
             .opacity(0.85)
         }
     }
@@ -672,7 +645,7 @@ private struct MessageRow: View {
                     Button { react(reaction) } label: {
                         Text("\(reaction.key) \(reaction.count)").font(.caption)
                             .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(reaction.me ? Color.accentColor.opacity(0.2) : Color(uiColor: .secondarySystemBackground), in: Capsule())
+                            .background(reaction.me ? Color.accentColor.opacity(0.2) : Color.appCanvas, in: Capsule())
                             .overlay(Capsule().stroke(reaction.me ? Color.accentColor : .clear, lineWidth: 1))
                     }.buttonStyle(.plain)
                 }

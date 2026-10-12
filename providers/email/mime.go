@@ -17,7 +17,7 @@ import (
 )
 
 const maxMail = 8 << 20
-const maxPage = 20
+const maxPage = 50
 const maxMailbox = 100000
 const maxParts = 100
 

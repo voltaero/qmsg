@@ -17,7 +17,7 @@ struct QmsgApp: App {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            .background(Color.appCanvas.ignoresSafeArea())
             .environment(store)
             .task { store.resume() }
             .onChange(of: scenePhase) { _, phase in
@@ -71,6 +71,7 @@ struct RootView: View {
             }
             .badge(attention)
         }
+        .background(Color.appCanvas.ignoresSafeArea())
         .environment(router)
         .environment(accounts)
         .onChange(of: hasMail) { _, hasMail in

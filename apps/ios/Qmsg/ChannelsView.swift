@@ -32,11 +32,11 @@ struct ChatsView: View {
                 Group {
                     if search.isEmpty { browse } else { results }
                 }
-                .listRowBackground(Color(uiColor: .secondarySystemBackground))
+                .listRowBackground(Color.appCanvas)
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
+            .background(Color.appCanvas.ignoresSafeArea())
             .safeAreaInset(edge: .top, spacing: 0) {
                 ConnectionBanner(link: store.link) { store.resume() }
             }
@@ -63,6 +63,8 @@ struct ChatsView: View {
                     ContentUnavailableView("No Chat Selected", systemImage: "bubble.left.and.bubble.right", description: Text("Choose a conversation or a server."))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.appCanvas.ignoresSafeArea())
             .id(selection)
         }
         .sheet(isPresented: $composing) {
@@ -359,7 +361,7 @@ private struct ChatRow: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 NetworkBadge(style: item.network, size: 16)
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color(uiColor: .systemBackground), lineWidth: 2))
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color.appCanvas, lineWidth: 2))
                     .offset(x: 3, y: 3)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -468,6 +470,7 @@ struct ServerView: View {
                                 NavigationLink(value: key) {
                                     ServerChannelRow(title: org.scope.title(of: node.channel), kind: node.channel.kind, unread: store.activity[key]?.unread ?? 0)
                                 }
+                                .listRowBackground(Color.appCanvas)
                                 // Threads sit under their channel; a category's own children don't indent.
                                 .padding(.leading, CGFloat(max(0, node.depth - (group.title == nil ? 0 : 1))) * 16)
                             }
@@ -485,6 +488,8 @@ struct ServerView: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(Color.appCanvas.ignoresSafeArea())
                 .searchable(text: $search, prompt: "Search channels")
             } else {
                 ContentUnavailableView("Server Unavailable", systemImage: "questionmark.square.dashed", description: Text("You may have left this server."))

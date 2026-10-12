@@ -87,6 +87,40 @@ func TestInboxPageUsesBulkMetadataRequests(t *testing.T) {
 	}
 }
 
+func TestInboxLoadsTheRequestedFiftyHeaders(t *testing.T) {
+	p, server := testProvider(t)
+	for i := 0; i < 60; i++ {
+		raw := []byte(fmt.Sprintf("From: bob@example.test\r\nSubject: Mail %d\r\n\r\nBody", i))
+		if err := server.Append("INBOX", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := p.history(context.Background(), inbox(), nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 50 {
+		t.Fatalf("requested 50 headers, got %d", len(page.Messages))
+	}
+	if server.FullBodyFetches.Load() != 0 || server.Fetches.Load() > 2 {
+		t.Fatal("listing must fetch headers in bulk, without bodies")
+	}
+	next, err := p.history(context.Background(), inbox(), page.NextCursor, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Messages) != 10 || next.NextCursor != nil {
+		t.Fatal("pagination lost older mail")
+	}
+	seen := map[string]bool{}
+	for _, mail := range append(page.Messages, next.Messages...) {
+		if seen[mail.ID] {
+			t.Fatal("pagination duplicated mail")
+		}
+		seen[mail.ID] = true
+	}
+}
+
 func TestMoveDoesNotDownloadTheOriginalMail(t *testing.T) {
 	p, s := testProvider(t)
 	if e := s.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); e != nil {

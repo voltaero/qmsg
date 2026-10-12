@@ -95,7 +95,9 @@ The app has Chats and Settings, plus Mail when a mail account is set up:
   sender, recipients, body and attachments. HTML mail renders with scripts,
   network loads and remote images blocked; links open in Safari. Reply,
   compose, star, read state, move and trash use the provider's mail actions.
-  Mail lists load headers first and fetch a full body when you open a message.
+  Mail lists load up to 50 headers per page and fetch a full body when you open
+  a message. Gmail Inbox includes all categories and shows individual messages;
+  Gmail on the web can show only Primary and group replies into a thread.
   Reopening a folder refreshes its contents; external moves also remove loaded
   rows during syncing. Large mail does not block the rest of the list.
 - **Settings** lists accounts first, then the server and paired devices.

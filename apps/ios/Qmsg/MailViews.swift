@@ -89,6 +89,8 @@ struct MailView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.appCanvas.ignoresSafeArea())
             .safeAreaInset(edge: .top, spacing: 0) {
                 ConnectionBanner(link: store.link) { store.resume() }
             }
@@ -104,6 +106,8 @@ struct MailView: View {
                     ContentUnavailableView("No Mailbox Selected", systemImage: "tray", description: Text("Choose a mailbox to see its mail."))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.appCanvas.ignoresSafeArea())
             .id(selection)
         }
         .sheet(isPresented: Binding(get: { composing != nil }, set: { if !$0 { composing = nil } })) {
@@ -196,6 +200,7 @@ struct MailView: View {
 /// A mail folder as a list, newest first, like Mail's message list.
 struct MailboxView: View {
     @Environment(QmsgStore.self) private var store
+    @Environment(AccountsModel.self) private var accounts
     let key: ChannelKey
     @State private var opened: String?
     @State private var search = ""
@@ -207,6 +212,14 @@ struct MailboxView: View {
     private var channel: Channel? { scope?.channels[key.channel.channel] }
     private var conversation: Conversation { store.conversation(key) }
     private var role: MailboxRole { channel.map(MailboxRole.init) ?? .other }
+    private var gmailInbox: Bool {
+        role == .inbox && accounts.item(key.provider, store)?.managed?.settings["service"] == "gmail"
+    }
+    private var mailboxTitle: String { channel?.mailboxName ?? key.channel.channel }
+    private var mailboxSubtitle: String {
+        let identity = store.providers[key.provider]?.accountIdentity
+        return [gmailInbox ? "All categories" : nil, identity].compactMap { $0 }.joined(separator: " · ")
+    }
 
     private var mail: [Message] {
         let newest = conversation.messages.reversed()
@@ -232,6 +245,7 @@ struct MailboxView: View {
                     MailRow(message: message, showsRecipients: role.showsRecipients)
                 }
                 .buttonStyle(.plain)
+                .listRowBackground(Color.appCanvas)
                 .swipeActions(edge: .leading) {
                     if let email = message.email {
                         Button(email.read ? "Unread" : "Read", systemImage: email.read ? "envelope.badge" : "envelope.open") {
@@ -262,20 +276,24 @@ struct MailboxView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .overlay { emptyState }
         .overlay(alignment: .top) { ConnectionBanner(link: store.link) { store.resume() } }
         .refreshable { await store.loadLatest(key) }
         .searchable(text: $search, prompt: "Search loaded mail")
-        .navigationTitle(channel?.mailboxName ?? key.channel.channel)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let identity = store.providers[key.provider]?.accountIdentity {
-                Text(identity).font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 6).background(.bar)
-            }
-        }
-        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
-        .navigationBarTitleDisplayMode(.large)
+        .navigationTitle(mailboxTitle)
+        .background(Color.appCanvas.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    Text(mailboxTitle).font(.headline).lineLimit(1)
+                    if !mailboxSubtitle.isEmpty {
+                        Text(mailboxSubtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New message", systemImage: "square.and.pencil") { composing = true }
             }
@@ -395,6 +413,8 @@ struct MailMessageView: View {
                 ContentUnavailableView("Message unavailable", systemImage: "envelope", description: Text("It was moved or deleted."))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appCanvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { if let message, let email = message.email { toolbar(message, email) } }
         // The message's own actions take the bottom, as in Mail.

@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 import QmsgKit
 
+extension Color {
+    /// The same canvas behind content and the native glass bars.
+    static var appCanvas: Color { Color(uiColor: .secondarySystemBackground) }
+}
+
 /// Which tab is showing, and where Settings is, so any screen can send the
 /// user to an account that needs them.
 @MainActor @Observable

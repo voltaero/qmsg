@@ -140,7 +140,8 @@ func (p *provider) withMailbox(ctx context.Context, ref qmsg.ChannelRef, fn func
 	defer c.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	selected, e := c.Select(ref.Channel, nil).Wait()
+	mailbox, _ := p.mailbox(ref.Channel)
+	selected, e := c.Select(mailbox, nil).Wait()
 	if e != nil {
 		return e
 	}
@@ -260,11 +261,26 @@ func (p *provider) sync(ctx context.Context) ([]string, error) {
 		states[ch.ID] = statusState(d)
 	}
 	changed := changedFolders(p.states, states)
+	if _, ok := folders["INBOX"]; ok && p.tabsOn() {
+		// The tabs are views of INBOX: they change with it.
+		for _, ch := range tabChannels() {
+			folders[ch.ID] = ch
+			channels = append(channels, ch)
+		}
+		if i := sort.SearchStrings(changed, "INBOX"); i < len(changed) && changed[i] == "INBOX" {
+			for _, t := range gmailTabs {
+				changed = append(changed, t.id)
+			}
+			sort.Strings(changed)
+		}
+		sort.Slice(channels, func(i, j int) bool { return channels[i].ID < channels[j].ID })
+	}
 	for _, folder := range changed {
 		if len(p.loadedMail[folder]) == 0 {
 			continue
 		}
-		selected, err := c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
+		mailbox, tab := p.mailbox(folder)
+		selected, err := c.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait()
 		if err != nil {
 			return nil, err
 		}
@@ -272,8 +288,12 @@ func (p *provider) sync(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		uids, err := p.inTab(ctx, selected, states[mailbox].modseq, tab, result.AllUIDs())
+		if err != nil {
+			return nil, err
+		}
 		ref := qmsg.ChannelRef{Organization: qmsg.Str(p.cfg.address), Channel: folder}
-		for _, id := range p.forgetMissingMail(folder, selected.UIDValidity, result.AllUIDs()) {
+		for _, id := range p.forgetMissingMail(folder, selected.UIDValidity, uids) {
 			if p.cx != nil {
 				p.cx.Emit(qmsg.Deleted{Channel: ref, ID: id})
 			}
@@ -359,6 +379,11 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 		if len(uids) > maxMailbox {
 			return fmt.Errorf("mailbox exceeds UID limit")
 		}
+		mailbox, tab := p.mailbox(ref.Channel)
+		all := uids
+		if uids, e = p.inTab(ctx, s, p.states[mailbox].modseq, tab, uids); e != nil {
+			return e
+		}
 		if cursor == nil {
 			for _, id := range p.forgetMissingMail(ref.Channel, s.UIDValidity, uids) {
 				if p.cx != nil {
@@ -366,9 +391,24 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 				}
 			}
 		}
-		uids, e = p.orderedMail(c, ref.Channel, s.UIDValidity, uids)
+		// Order the whole mailbox so switching tabs reuses its dates.
+		ordered, e := p.orderedMail(c, mailbox, s.UIDValidity, all)
 		if e != nil {
 			return e
+		}
+		if tab != "" {
+			keep := make(map[imap.UID]bool, len(uids))
+			for _, uid := range uids {
+				keep[uid] = true
+			}
+			uids = []imap.UID{}
+			for _, uid := range ordered {
+				if keep[uid] {
+					uids = append(uids, uid)
+				}
+			}
+		} else {
+			uids = ordered
 		}
 		if before != 0 {
 			index := -1
@@ -532,10 +572,10 @@ func (p *provider) flags(ctx context.Context, fc qmsg.InMessage, flag imap.Flag,
 	})
 }
 func (p *provider) move(ctx context.Context, fc qmsg.InMessage, target string) error {
-	if _, ok := p.folders[target]; !ok {
+	if _, ok := p.folders[target]; !ok || p.isTab(target) {
 		return qmsg.ErrUnknownChannel{Channel: qmsg.ChannelRef{Organization: qmsg.Str(p.cfg.address), Channel: target}}
 	}
-	if target == fc.Channel.Channel {
+	if source, _ := p.mailbox(fc.Channel.Channel); target == source {
 		return fmt.Errorf("choose a different mailbox")
 	}
 	return p.withMailbox(ctx, fc.Channel, func(c *imapclient.Client, s *imap.SelectData) error {

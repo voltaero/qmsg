@@ -3,7 +3,7 @@ import Foundation
 /// What a mail folder is for, from its IMAP special-use attributes, or the
 /// usual names when the server doesn't label it.
 public enum MailboxRole: Int, Comparable, Sendable {
-    case inbox, starred, important, drafts, sent, archive, all, junk, trash, other
+    case inbox, tab, starred, important, drafts, sent, archive, all, junk, trash, other
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 
@@ -11,6 +11,8 @@ public enum MailboxRole: Int, Comparable, Sendable {
         let attributes = Set((channel.mailbox?.attributes ?? []).map { $0.lowercased() })
         let name = channel.mailboxName.lowercased()
         if channel.id.caseInsensitiveCompare("INBOX") == .orderedSame { self = .inbox }
+        // Gmail's other inbox tabs, such as Promotions.
+        else if attributes.contains("$gmailtab") { self = .tab }
         else if attributes.contains("\\flagged") { self = .starred }
         else if attributes.contains("\\important") { self = .important }
         else if attributes.contains("\\drafts") { self = .drafts }

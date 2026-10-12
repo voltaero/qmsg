@@ -228,6 +228,8 @@ async fn gmail_oauth_flow(ios: bool) {
                 wasm: support::go_component("providers/email"),
                 settings: [
                     ("service".into(), "gmail".into()),
+                    // The fixture server has no X-GM-RAW search for tabs.
+                    ("gmail_tabs".into(), "false".into()),
                     (
                         "oauth_client_id".into(),
                         if ios {

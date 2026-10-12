@@ -44,7 +44,16 @@ service = "gmail"
 address = "you@gmail.com"
 oauth_client_id = "YOUR_QMSG_DESKTOP_CLIENT_ID"
 # oauth_client_secret = "..." # if supplied with the registered desktop client
+# gmail_tabs = "false" # show every inbox tab in INBOX
 ```
+
+Gmail's IMAP `INBOX` holds every inbox tab, but Gmail shows only Primary in
+its Inbox. qmsg does the same: `INBOX` lists Primary mail, and the other tabs
+are mailboxes of their own, `INBOX/Promotions`, `INBOX/Social`,
+`INBOX/Updates` and `INBOX/Forums`, with the `$GmailTab` attribute. They are
+views of `INBOX`, found with Gmail's `X-GM-RAW` search on a separate short
+connection whenever Inbox changes. Their mail can't be moved into a tab or from
+a tab to Inbox. Set `gmail_tabs = "false"` if the account has tabs turned off.
 
 Gmail defaults to `imap.gmail.com:993` and `smtp.gmail.com:465`. It uses XOAUTH2,
 not a password. Google documents the endpoints and full-mail OAuth scope in
@@ -166,7 +175,7 @@ address syntax; it cannot prove that an address exists or will accept mail.
 
 Large-mail lazy part downloads, draft editing, server-side message search,
 Gmail-specific label/thread IDs and alternate SMTP credentials are not implemented.
-Gmail labels appear as IMAP folders. These limits are explicit rather than
+Gmail labels appear as IMAP folders and inbox tabs as virtual mailboxes. These limits are explicit rather than
 silently truncating mail or claiming unsupported actions.
 
 ## Tests

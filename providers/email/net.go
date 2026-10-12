@@ -19,6 +19,7 @@ type config struct {
 	sentMailbox, trashMailbox             string
 	clientID, clientSecret                string
 	oauthRedirect                         string
+	gmailTabs                             bool
 	tls                                   *tls.Config
 	redirects                             map[string]string
 }
@@ -28,6 +29,13 @@ func configuration(s map[string]string) (config, error) {
 	if c.service == "gmail" {
 		c.clientID, c.clientSecret = s["oauth_client_id"], s["oauth_client_secret"]
 		c.oauthRedirect = s["oauth_redirect_uri"]
+		switch s["gmail_tabs"] {
+		case "", "true":
+			c.gmailTabs = true
+		case "false":
+		default:
+			return c, fmt.Errorf("gmail_tabs must be true or false")
+		}
 		c.imap = "imap.gmail.com:993"
 		c.smtp = "smtp.gmail.com:465"
 		c.smtpTLS = "tls"

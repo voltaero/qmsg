@@ -29,11 +29,15 @@ type provider struct {
 	folders       map[string]qmsg.Channel
 	loadedMail    map[string]map[string]bool
 	mailOrder     *mailOrder
-	states        map[string]folderState
-	published     []qmsg.Channel
-	reported      qmsg.ProviderStatus
-	known         map[string]qmsg.EmailAddress
-	ready         bool
+	inboxTabs     *inboxTabs
+	tabSession    *tabSession
+	// searchTabs replaces the Gmail tab search in tests.
+	searchTabs func(context.Context) (uint32, map[string][]imap.UID, error)
+	states     map[string]folderState
+	published  []qmsg.Channel
+	reported   qmsg.ProviderStatus
+	known      map[string]qmsg.EmailAddress
+	ready      bool
 }
 
 func (p *provider) storeCredential() error {
@@ -75,6 +79,7 @@ func run(cx *qmsg.Context) error {
 		return e
 	}
 	p := &provider{cx: cx, cfg: cfg, folders: map[string]qmsg.Channel{}, known: map[string]qmsg.EmailAddress{}}
+	defer p.closeTabs()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -406,6 +411,8 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		p.states = nil
 		p.loadedMail = nil
 		p.mailOrder = nil
+		p.inboxTabs = nil
+		p.closeTabs()
 		p.published = nil
 		p.known = map[string]qmsg.EmailAddress{}
 		p.cx.Directory(qmsg.OrganizationRemoved{ID: p.cfg.address})
@@ -564,6 +571,9 @@ func (p *provider) complete(c qmsg.CompletionRequest) (qmsg.Reply, error) {
 	if c.Call.Function == "complete_mailbox" {
 		as = nil
 		for name := range p.folders {
+			if p.isTab(name) {
+				continue
+			}
 			if strings.Contains(strings.ToLower(name), strings.ToLower(c.Query)) {
 				as = append(as, qmsg.EmailAddress{Address: name})
 			}

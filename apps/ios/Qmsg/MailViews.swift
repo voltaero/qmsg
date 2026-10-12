@@ -8,6 +8,7 @@ extension MailboxRole {
     var symbol: String {
         switch self {
         case .inbox: "tray"
+        case .tab: "tag"
         case .starred: "star"
         case .important: "exclamationmark.circle"
         case .drafts: "doc"
@@ -546,7 +547,12 @@ struct MailMessageView: View {
                     .disabled(busy)
             }
             Spacer()
-            let folders = (scope?.mailboxes ?? []).filter { $0.id != key.channel.channel }
+            // Tabs are views of Inbox, so mail can't move into one or from
+            // one to Inbox.
+            let inTab = scope?.channels[key.channel.channel].map { MailboxRole($0) == .tab } ?? false
+            let folders = (scope?.mailboxes ?? []).filter {
+                $0.id != key.channel.channel && MailboxRole($0) != .tab && !(inTab && MailboxRole($0) == .inbox)
+            }
             if has("move") && !folders.isEmpty {
                 Menu("Move", systemImage: "folder") {
                     ForEach(folders) { folder in

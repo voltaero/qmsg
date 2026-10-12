@@ -50,14 +50,24 @@ public final class QmsgStore {
     /// conversation is observable.
     @ObservationIgnored private var conversations: [ChannelKey: Conversation] = [:]
     private var watchTask: Task<Void, Never>?
-    private var opened: [ChannelKey] = []
+    /// Where recently opened chats are kept between launches, if anywhere.
+    @ObservationIgnored private let defaults: UserDefaults?
+    private static let openedKey = "recentChats"
+    private var opened: [ChannelKey] = [] {
+        didSet { defaults?.set(try? JSONEncoder().encode(opened), forKey: Self.openedKey) }
+    }
     private var epoch = ""
     private var sequence: UInt64 = 0
 
-    public init(accounts: any AccountStore) {
+    public init(accounts: any AccountStore, defaults: UserDefaults? = nil) {
         self.accounts = accounts
+        self.defaults = defaults
         media = MediaLoader()
         account = try? accounts.load()
+        if account != nil, let data = defaults?.data(forKey: Self.openedKey),
+           let saved = try? JSONDecoder().decode([ChannelKey].self, from: data) {
+            opened = saved
+        }
     }
 
     public var sortedProviders: [ProviderState] {

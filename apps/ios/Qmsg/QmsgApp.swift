@@ -4,7 +4,7 @@ import QmsgKit
 @main
 @MainActor
 struct QmsgApp: App {
-    @State private var store = QmsgStore(accounts: KeychainAccountStore())
+    @State private var store = QmsgStore(accounts: KeychainAccountStore(), defaults: .standard)
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {

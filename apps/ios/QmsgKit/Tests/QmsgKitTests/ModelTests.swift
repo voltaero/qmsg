@@ -82,6 +82,20 @@ import GRPCCore
         #expect(retry.id != pending.id)
     }
 
+    @MainActor @Test func recentChatsSurviveRelaunch() throws {
+        let defaults = try #require(UserDefaults(suiteName: "qmsg-recent-\(UUID().uuidString)"))
+        let account = Account(endpoint: ServerEndpoint(host: "127.0.0.1", port: 7100, secure: true), deviceID: "device", token: "token", expiresAtMs: 0)
+        let id = ProviderID(name: "discord", instance: 1)
+        let snapshot = Snapshot(providers: [ProviderView(provider: id, status: .ready, organizations: [], standalone: Scope(channels: ["dm": channel("dm")]))], epoch: "epoch", sequence: 0)
+        let key = ChannelKey(provider: "discord", channel: ChannelRef(organization: nil, channel: "dm"))
+        let store = QmsgStore(accounts: MemoryAccountStore(account), defaults: defaults)
+        store.apply(.snapshot(snapshot))
+        store.visible = key
+        let relaunched = QmsgStore(accounts: MemoryAccountStore(account), defaults: defaults)
+        relaunched.apply(.snapshot(snapshot))
+        #expect(relaunched.recentKeys == [key])
+    }
+
     @MainActor @Test func recentDoesNotFollowTrafficInUnopenedServerChannels() {
         let store = QmsgStore(accounts: MemoryAccountStore())
         let id = ProviderID(name: "discord", instance: 1)
@@ -296,10 +310,11 @@ import GRPCCore
             "[Gmail]/Trash": try mailbox("[Gmail]/Trash", ["\\HasNoChildren", "\\Trash"]),
             "[Gmail]/Sent Mail": try mailbox("[Gmail]/Sent Mail", ["\\Sent"]),
             "INBOX": try mailbox("INBOX", []),
+            "INBOX/Promotions": try mailbox("INBOX/Promotions", ["\\HasNoChildren", "$GmailTab"]),
             "[Gmail]/Starred": try mailbox("[Gmail]/Starred", ["\\Flagged"]),
             "Spam": try mailbox("Spam", []),
         ])
-        #expect(scope.mailboxes.map(\.mailboxName) == ["Inbox", "Starred", "Sent Mail", "Spam", "Trash", "Receipts"])
+        #expect(scope.mailboxes.map(\.mailboxName) == ["Inbox", "Promotions", "Starred", "Sent Mail", "Spam", "Trash", "Receipts"])
         #expect(MailboxRole(scope.channels["Spam"]!) == .junk)
     }
 

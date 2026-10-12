@@ -53,6 +53,9 @@ public final class QmsgStore {
     /// Where recently opened chats are kept between launches, if anywhere.
     @ObservationIgnored private let defaults: UserDefaults?
     private static let openedKey = "recentChats"
+    /// The newest message marked read in each channel, and marks running.
+    @ObservationIgnored private var readUpTo: [ChannelKey: String] = [:]
+    @ObservationIgnored private var marking: Set<ChannelKey> = []
     private var opened: [ChannelKey] = [] {
         didSet { defaults?.set(try? JSONEncoder().encode(opened), forKey: Self.openedKey) }
     }
@@ -147,6 +150,7 @@ public final class QmsgStore {
         activity = [:]
         opened = []
         conversations = [:]
+        readUpTo = [:]
         epoch = ""
         sequence = 0
         media.clear()
@@ -443,7 +447,8 @@ public final class QmsgStore {
             self.data = data
         }
 
-        var kind: ContentKind {
+        /// The kind of content the file is sent as, from its MIME type.
+        public var kind: ContentKind {
             switch mime.split(separator: "/").first {
             case "image": .image
             case "video": .video
@@ -531,9 +536,12 @@ public final class QmsgStore {
             }
         } catch {
             // Without an answer, the journal can't say whether it was sent.
+            // The server refuses invalid requests and exhausted quotas before
+            // running anything.
             let message = Self.describe(error)
+            let refused = error.rpcCode == .invalidArgument || error.rpcCode == .resourceExhausted
             conversation.update(nonce: pending.id) {
-                $0.state = !submitted || error is StoreError || error.rpcCode == .invalidArgument || $0.content.contains(where: Self.isUnsentUpload) ? .failed(message) : .unknown(message)
+                $0.state = !submitted || error is StoreError || refused || $0.content.contains(where: Self.isUnsentUpload) ? .failed(message) : .unknown(message)
             }
         }
     }
@@ -601,14 +609,31 @@ public final class QmsgStore {
     }
 
     /// Marks a channel read up to its newest message, when the provider
-    /// offers a read action there.
+    /// offers a read action there. Each mark is a journaled action, and the
+    /// server keeps a limited number per device, so a message is marked
+    /// once, the account's own messages not at all, and a burst of arrivals
+    /// while one mark runs becomes a single mark of the newest.
     public func markRead(_ key: ChannelKey) async {
-        guard let last = conversations[key]?.messages.last else { return }
+        guard !marking.contains(key), let last = conversations[key]?.messages.last, readUpTo[key] != last.id else { return }
+        if last.author == providers[key.provider]?.scope(key.channel.organization)?.me {
+            readUpTo[key] = last.id
+            return
+        }
+        marking.insert(key)
         let context = FunctionContext.message(channel: key.channel, id: last.id)
-        guard let functions = try? await functions(context, provider: key.provider),
-              let markRead = functions.first(where: { $0.action == .markRead })
-        else { return }
-        _ = try? await call(markRead, context: context, arguments: [:], provider: key.provider)
+        if let functions = try? await functions(context, provider: key.provider) {
+            if let markRead = functions.first(where: { $0.action == .markRead }) {
+                if case .success = try? await call(markRead, context: context, arguments: [:], provider: key.provider) {
+                    readUpTo[key] = last.id
+                }
+            } else {
+                readUpTo[key] = last.id
+            }
+        }
+        marking.remove(key)
+        if readUpTo[key] == last.id, conversations[key]?.messages.last?.id != last.id, visible == key {
+            await markRead(key)
+        }
     }
 
     // MARK: Devices

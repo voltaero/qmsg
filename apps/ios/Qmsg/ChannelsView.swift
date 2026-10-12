@@ -7,8 +7,8 @@ enum ChatRoute: Hashable {
     case server(provider: String, organization: String)
 }
 
-/// Every chat account in one list: chats opened lately, then servers, then
-/// direct messages, newest first. Mail lives in its own tab.
+/// Every chat account in one list: chats opened lately, then direct
+/// messages, newest first, then servers. Mail lives in its own tab.
 struct ChatsView: View {
     @Environment(QmsgStore.self) private var store
     @Environment(AccountsModel.self) private var accounts
@@ -92,15 +92,6 @@ struct ChatsView: View {
                 }
             }
         }
-        let servers = serverItems
-        if !servers.isEmpty {
-            Section {
-                SectionTitle("Servers")
-                ForEach(servers, id: \.route) { server in
-                    NavigationLink(value: server.route) { ServerRow(server: server) }
-                }
-            }
-        }
         let shown = Set(recent.map(\.key))
         let direct = directItems.filter { !shown.contains($0.key) }
         if !direct.isEmpty {
@@ -108,6 +99,15 @@ struct ChatsView: View {
                 SectionTitle("Direct Messages")
                 ForEach(direct, id: \.key) { item in
                     NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
+                }
+            }
+        }
+        let servers = serverItems
+        if !servers.isEmpty {
+            Section {
+                SectionTitle("Servers")
+                ForEach(servers, id: \.route) { server in
+                    NavigationLink(value: server.route) { ServerRow(server: server) }
                 }
             }
         }
@@ -226,7 +226,7 @@ struct ChatsView: View {
                 }
             }
         }
-        chats.sort { ($0.date ?? .distantPast, $1.title) > ($1.date ?? .distantPast, $0.title) }
+        chats.sort(by: ChatItem.newestFirst)
         let servers = serverItems.filter { matches($0.name) }
         return (Array(chats.prefix(60)), servers)
     }
@@ -279,7 +279,7 @@ struct ChatsView: View {
                 .filter { !$0.isContainer && !$0.isMailbox }
                 .map { chatItem(provider, organization: nil, channel: $0) }
         }
-        .sorted { ($0.date ?? .distantPast, $1.title) > ($1.date ?? .distantPast, $0.title) }
+        .sorted(by: ChatItem.newestFirst)
     }
 
     private var serverItems: [ServerItem] {
@@ -339,6 +339,19 @@ struct ChatItem {
     var isServerChannel: Bool
     var icon: Media?
     var network: NetworkStyle
+    /// The provider's order, for chats with no activity loaded yet. Discord
+    /// sends direct messages by their last message.
+    var position: UInt32
+
+    /// Chats with activity by its date, then the rest in provider order.
+    static func newestFirst(_ a: ChatItem, _ b: ChatItem) -> Bool {
+        switch (a.date, b.date) {
+        case let (x?, y?): (x, b.title) > (y, a.title)
+        case (.some, nil): true
+        case (nil, .some): false
+        case (nil, nil): (a.position, a.title) < (b.position, b.title)
+        }
+    }
 
     @MainActor
     init(store: QmsgStore, accounts: AccountsModel, provider: ProviderState, organization: String?, channel: Channel) {
@@ -361,6 +374,7 @@ struct ChatItem {
         isServerChannel = organization != nil
         icon = org?.icon ?? channel.icon
         network = accounts.style(for: provider.name)
+        position = channel.position ?? .max
     }
 }
 

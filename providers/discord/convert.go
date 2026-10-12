@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/ningen/v3"
@@ -117,6 +119,21 @@ func memberName(m discord.Member) string {
 	return userName(m.User)
 }
 
+// discordEpoch is when snowflake timestamps start.
+var discordEpoch = time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// recency orders direct messages as Discord does, newest conversation
+// first: a smaller position is a later last message, or creation when
+// there are no messages. Seconds since the Discord epoch fit in 32 bits
+// for over a century.
+func recency(ch discord.Channel) uint32 {
+	at := ch.ID.Time()
+	if ch.LastMessageID.IsValid() {
+		at = ch.LastMessageID.Time()
+	}
+	return math.MaxUint32 - uint32(max(at.Sub(discordEpoch)/time.Second, 0))
+}
+
 // channel describes ch, accepting text only when send is allowed.
 func channel(ch discord.Channel, me discord.UserID, send bool) qmsg.Channel {
 	c := qmsg.Channel{ID: ch.ID.String(), Name: ch.Name, Kind: channelKind(ch.Type), Icon: publicImage(ch.IconURLWithType(discord.AutoImage))}
@@ -131,6 +148,8 @@ func channel(ch discord.Channel, me discord.UserID, send bool) qmsg.Channel {
 	}
 	if ch.GuildID.IsValid() {
 		c.Position = qmsg.U32(uint32(max(ch.Position, 0)))
+	} else {
+		c.Position = qmsg.U32(recency(ch))
 	}
 	if len(ch.DMRecipients) > 0 {
 		members := []string{me.String()}

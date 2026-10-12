@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDMNameUsesTheDeduplicatedReadyProfile(t *testing.T) {
@@ -53,5 +54,21 @@ func TestProfilesAndGroupIcons(t *testing.T) {
 	c := channel(discord.Channel{ID: 3100, Type: discord.GroupDM, Icon: "group-icon", Topic: "topic"}, 1001, true)
 	if c.Icon == nil || c.Topic == nil || *c.Topic != "topic" {
 		t.Fatalf("missing channel details: %+v", c)
+	}
+}
+
+func TestDirectMessagesSortNewestFirst(t *testing.T) {
+	at := func(d time.Duration) discord.MessageID {
+		return discord.MessageID(discord.NewSnowflake(discordEpoch.Add(d)))
+	}
+	old := channel(discord.Channel{ID: discord.ChannelID(at(time.Hour)), Type: discord.DirectMessage, LastMessageID: at(48 * time.Hour)}, 1001, true)
+	recent := channel(discord.Channel{ID: discord.ChannelID(at(2 * time.Hour)), Type: discord.DirectMessage, LastMessageID: at(72 * time.Hour)}, 1001, true)
+	quiet := channel(discord.Channel{ID: discord.ChannelID(at(24 * time.Hour)), Type: discord.GroupDM}, 1001, true)
+	if *recent.Position >= *old.Position || *old.Position >= *quiet.Position {
+		t.Fatalf("positions %d %d %d are not newest first", *recent.Position, *old.Position, *quiet.Position)
+	}
+	guild := channel(discord.Channel{ID: 5, GuildID: 1, Type: discord.GuildText, Position: 3}, 1001, true)
+	if *guild.Position != 3 {
+		t.Fatal("server channels keep Discord's position")
 	}
 }

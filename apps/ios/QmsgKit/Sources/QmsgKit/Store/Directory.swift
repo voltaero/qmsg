@@ -1,5 +1,27 @@
 import Foundation
 
+extension Scope {
+    public func members(in channel: Channel) -> [User] {
+        let people = channel.members.map { $0.compactMap { users[$0] } } ?? Array(users.values)
+        return people.sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
+    }
+
+    public func mentionSuggestions(in channel: Channel, recentAuthors: [String], query: String) -> [User] {
+        let people: [User]
+        if let ids = channel.members {
+            people = ids.compactMap { users[$0] }
+        } else if query.isEmpty {
+            people = Set(recentAuthors).compactMap { users[$0] }
+        } else {
+            people = Array(users.values)
+        }
+        return people.filter { $0.id != me && !$0.name.isEmpty && $0.name != $0.id }
+            .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || ($0.username?.localizedCaseInsensitiveContains(query) ?? false) }
+            .sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
+            .prefix(6).map { $0 }
+    }
+}
+
 /// One provider's account as the app knows it.
 public struct ProviderState: Hashable, Sendable, Identifiable {
     public var id: ProviderID
@@ -8,6 +30,23 @@ public struct ProviderState: Hashable, Sendable, Identifiable {
     public var standalone: Scope
 
     public var name: String { id.name }
+
+    /// The identity reported by this account's network, rather than its local label.
+    public var accountIdentity: String? {
+        let scopes = [standalone] + sortedOrganizations.map(\.scope)
+        for scope in scopes {
+            guard let id = scope.me else { continue }
+            if let user = scope.users[id] {
+                if let username = user.username, !username.isEmpty {
+                    if username.contains("@") { return username }
+                    return user.name == username ? "@" + username : user.name + " · @" + username
+                }
+                if !user.name.isEmpty, user.name != id { return user.name }
+            }
+            if id.contains("@") { return id }
+        }
+        return nil
+    }
 
     public init(id: ProviderID, status: ProviderStatus = .connecting, organizations: [String: OrganizationEntry] = [:], standalone: Scope = Scope()) {
         self.id = id

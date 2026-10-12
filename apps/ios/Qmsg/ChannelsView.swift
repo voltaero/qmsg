@@ -1,40 +1,35 @@
 import SwiftUI
 import QmsgKit
 
-/// One inbox across accounts: recent chats first, then each account's direct
-/// messages and servers.
+/// What the Chats sidebar can open: a conversation, or a server's channels.
+enum ChatRoute: Hashable {
+    case chat(ChannelKey)
+    case server(provider: String, organization: String)
+}
+
+/// Every chat account in one list: chats opened lately, then servers, then
+/// direct messages, newest first. Mail lives in its own tab.
 struct ChatsView: View {
     @Environment(QmsgStore.self) private var store
     @Environment(AccountsModel.self) private var accounts
     @Environment(AppRouter.self) private var router
-    @State private var selected: ChannelKey?
+    @State private var selection: ChatRoute?
     @State private var composing = false
     @State private var search = ""
     @State private var filter: String?
-    @State private var expanded: Set<String> = []
 
-    private var providers: [ProviderState] {
-        store.sortedProviders.filter { filter == nil || $0.name == filter }
+    private var chatProviders: [ProviderState] {
+        store.sortedProviders.filter { !accounts.isMail($0) }
+    }
+
+    private var shownProviders: [ProviderState] {
+        chatProviders.filter { filter == nil || $0.name == filter }
     }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selected) {
-                attentionRows
-                if store.providers.count > 1 && search.isEmpty {
-                    filterChips
-                }
-                let recent = recentChats
-                if !recent.isEmpty {
-                    Section("Recent") {
-                        ForEach(recent, id: \.key) { item in
-                            NavigationLink(value: item.key) { ChatRow(item: item) }
-                        }
-                    }
-                }
-                ForEach(providers) { provider in
-                    accountSection(provider)
-                }
+            List(selection: $selection) {
+                if search.isEmpty { browse } else { results }
             }
             .listStyle(.plain)
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -42,63 +37,125 @@ struct ChatsView: View {
             }
             .overlay { emptyState }
             .navigationTitle("Chats")
-            .searchable(text: $search, prompt: "Search chats")
+            .searchable(text: $search, prompt: "Search")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("New chat", systemImage: "square.and.pencil") { composing = true }
-                        .disabled(store.providers.isEmpty)
+                    Button("New Message", systemImage: "square.and.pencil") { composing = true }
+                        .disabled(chatProviders.isEmpty)
                 }
+            }
+            .onChange(of: chatProviders.map(\.name)) { _, names in
+                if let filter, !names.contains(filter) { self.filter = nil }
             }
         } detail: {
-            if let selected {
-                if store.providers[selected.provider]?.channel(selected.channel)?.isMailbox == true {
-                    // Mail pushes messages on its own stack.
-                    NavigationStack { MailboxView(key: selected) }.id(selected)
-                } else {
-                    ChatView(key: selected).id(selected)
+            NavigationStack {
+                switch selection {
+                case .chat(let key):
+                    ChatView(key: key)
+                case .server(let provider, let organization):
+                    ServerView(provider: provider, organization: organization)
+                case nil:
+                    ContentUnavailableView("No Chat Selected", systemImage: "bubble.left.and.bubble.right", description: Text("Choose a conversation or a server."))
                 }
-            } else {
-                ContentUnavailableView("Choose a chat", systemImage: "bubble.left.and.bubble.right", description: Text("Pick a conversation to read and reply."))
+            }
+            .id(selection)
+        }
+        .sheet(isPresented: $composing) {
+            NavigationStack {
+                NewChatView { key in
+                    selection = .chat(key)
+                    composing = false
+                }
             }
         }
-        .sheet(isPresented: $composing) { NavigationStack { NewChatView { selected = $0; composing = false } } }
     }
 
-    // MARK: Sections
+    // MARK: Browsing
 
     @ViewBuilder
-    private var attentionRows: some View {
-        let waiting = accounts.items(store).filter { $0.health.needsUser }
-        if !waiting.isEmpty && search.isEmpty {
+    private var browse: some View {
+        statusRows
+        if chatProviders.count > 1 { filterChips }
+        let recent = recentItems
+        if !recent.isEmpty {
+            Section("Recent") {
+                ForEach(recent, id: \.key) { item in
+                    NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
+                }
+            }
+        }
+        let servers = serverItems
+        if !servers.isEmpty {
+            Section("Servers") {
+                ForEach(servers, id: \.route) { server in
+                    NavigationLink(value: server.route) { ServerRow(server: server) }
+                }
+            }
+        }
+        let shown = Set(recent.map(\.key))
+        let direct = directItems.filter { !shown.contains($0.key) }
+        if !direct.isEmpty {
+            Section("Direct Messages") {
+                ForEach(direct, id: \.key) { item in
+                    NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
+                }
+            }
+        }
+    }
+
+    /// Accounts that need signing in or are still starting, so an empty
+    /// list explains itself.
+    @ViewBuilder
+    private var statusRows: some View {
+        let items = accounts.items(store).filter { item in
+            if let live = item.live {
+                if accounts.isMail(live) { return false }
+            } else if (accounts.type(for: item.name) ?? "").contains("mail") {
+                return false
+            }
+            if item.health.needsUser { return true }
+            guard let live = item.live else { return false }
+            return item.health.tone == .busy && live.standalone.channels.isEmpty && live.organizations.isEmpty
+        }
+        if !items.isEmpty {
             Section {
-                ForEach(waiting) { item in
+                ForEach(items) { item in
                     Button { router.show(account: item.name) } label: {
                         HStack(spacing: 12) {
                             NetworkBadge(style: item.style, size: 30)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(item.live?.status.loginStep != nil ? "Sign in to \(item.label)" : "\(item.label): \(item.health.title.lowercased())")
-                                    .font(.subheadline.weight(.semibold))
-                                if let detail = item.health.detail {
+                                Text(statusTitle(item)).font(.subheadline.weight(.semibold))
+                                if item.health.needsUser, let detail = item.health.detail {
                                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                                 }
                             }
                             Spacer(minLength: 0)
-                            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            if item.health.needsUser {
+                                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            } else {
+                                ProgressView().controlSize(.small)
+                            }
                         }
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(item.health.color.opacity(0.1))
+                    .listRowBackground(item.health.needsUser ? item.health.color.opacity(0.1) : nil)
                 }
             }
         }
+    }
+
+    private func statusTitle(_ item: AccountsModel.Item) -> String {
+        if item.live?.status.loginStep != nil { return "Sign in to \(item.label)" }
+        if item.health.needsUser { return "\(item.label): \(item.health.title.lowercased())" }
+        return "\(item.label) is \(item.health.title.lowercased())…"
     }
 
     private var filterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 chip("All", style: nil, selected: filter == nil) { filter = nil }
-                ForEach(store.sortedProviders) { provider in
-                    chip(accounts.label(for: provider.name), style: accounts.style(for: provider.name), selected: filter == provider.name) {
+                ForEach(chatProviders) { provider in
+                    chip([accounts.label(for: provider.name), provider.accountIdentity].compactMap { $0 }.joined(separator: " · "), style: accounts.style(for: provider.name), selected: filter == provider.name) {
                         filter = filter == provider.name ? nil : provider.name
                     }
                 }
@@ -120,174 +177,122 @@ struct ChatsView: View {
             .background(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary), in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
+
+    // MARK: Search
 
     @ViewBuilder
-    private func accountSection(_ provider: ProviderState) -> some View {
-        let direct = provider.standalone.channelTree().map(\.channel)
-            .filter { !$0.isContainer && matches(provider.standalone.title(of: $0)) }
-            .map { chatItem(provider, organization: nil, channel: $0) }
-            .sorted { ($0.date ?? .distantPast, $1.title) > ($1.date ?? .distantPast, $0.title) }
-        let servers = provider.sortedOrganizations.filter { org in
-            search.isEmpty || matches(org.name) || org.scope.channels.values.contains { matches(org.scope.title(of: $0)) }
+    private var results: some View {
+        let (chats, servers) = searchHits
+        if !chats.isEmpty {
+            Section("Chats") {
+                ForEach(chats, id: \.key) { item in
+                    NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
+                }
+            }
         }
-        if !direct.isEmpty || !servers.isEmpty || (search.isEmpty && provider.status.loginStep == nil) {
-            Section {
-                ForEach(direct, id: \.key) { item in
-                    NavigationLink(value: item.key) { ChatRow(item: item) }
-                }
-                ForEach(servers) { org in
-                    if org.scope.channels.values.contains(where: \.isMailbox) {
-                        mailGroup(provider, org)
-                    } else {
-                        serverGroup(provider, org)
-                    }
-                }
-                if direct.isEmpty && servers.isEmpty {
-                    Text(provider.status.isReady ? "No chats yet" : AccountHealth(status: provider.status, enabled: true).title + "…")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            } header: {
-                HStack(spacing: 8) {
-                    NetworkBadge(style: accounts.style(for: provider.name), size: 18)
-                    Text(accounts.label(for: provider.name))
+        if !servers.isEmpty {
+            Section("Servers") {
+                ForEach(servers, id: \.route) { server in
+                    NavigationLink(value: server.route) { ServerRow(server: server) }
                 }
             }
         }
     }
 
-    private func serverGroup(_ provider: ProviderState, _ org: OrganizationEntry) -> some View {
-        let id = provider.name + "\n" + org.id
-        let open = !search.isEmpty || expanded.contains(id)
-        let unread = store.activity.reduce(0) { total, entry in
-            entry.key.provider == provider.name && entry.key.channel.organization == org.id ? total + entry.value.unread : total
-        }
-        return DisclosureGroup(isExpanded: Binding(get: { open }, set: { open in
-            if open { expanded.insert(id) } else { expanded.remove(id) }
-        })) {
-            // Only build a server's channel list while it's open.
-            if open {
-                ForEach(org.scope.channelTree().filter { search.isEmpty || $0.channel.isContainer || matches(org.scope.title(of: $0.channel)) }) { node in
-                    let channel = node.channel
-                    if channel.isContainer {
-                        if search.isEmpty {
-                            Text(org.scope.title(of: channel).uppercased())
-                                .font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-                                .padding(.leading, CGFloat(node.depth) * 10).padding(.top, 2)
-                                .listRowSeparator(.hidden)
-                        }
-                    } else {
-                        let key = ChannelKey(provider: provider.name, channel: ChannelRef(organization: org.id, channel: channel.id))
-                        NavigationLink(value: key) {
-                            ServerChannelRow(title: org.scope.title(of: channel), kind: channel.kind, unread: store.activity[key]?.unread ?? 0)
-                        }
-                        .padding(.leading, CGFloat(node.depth) * 10)
-                        .listRowSeparator(.hidden)
-                    }
+    /// Chats and channels whose names match, then servers that do.
+    private var searchHits: ([ChatItem], [ServerItem]) {
+        var chats: [ChatItem] = []
+        for provider in shownProviders {
+            for channel in provider.standalone.channels.values where !channel.isContainer && matches(provider.standalone.title(of: channel)) {
+                chats.append(chatItem(provider, organization: nil, channel: channel))
+            }
+            for org in provider.sortedOrganizations {
+                for channel in org.scope.channels.values where !channel.isContainer && !channel.isMailbox && matches(org.scope.title(of: channel)) {
+                    chats.append(chatItem(provider, organization: org.id, channel: channel))
                 }
             }
-        } label: {
-            HStack(spacing: 10) {
-                ServerTile(name: org.name, size: 26)
-                Text(org.name).font(.subheadline.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
-                Spacer(minLength: 0)
-                if unread > 0 { UnreadBadge(count: unread) }
-            }
         }
+        chats.sort { ($0.date ?? .distantPast, $1.title) > ($1.date ?? .distantPast, $0.title) }
+        let servers = serverItems.filter { matches($0.name) }
+        return (Array(chats.prefix(60)), servers)
     }
 
-    /// A mail account's folders, like Mail's sidebar: Inbox and the special
-    /// folders, then the rest folded away.
-    @ViewBuilder
-    private func mailGroup(_ provider: ProviderState, _ org: OrganizationEntry) -> some View {
-        let folders = org.scope.mailboxes.filter { matches($0.mailboxName) || matches(org.name) }
-        let main = folders.filter { MailboxRole($0) != .other }
-        let others = folders.filter { MailboxRole($0) == .other }
-        if org.name != accounts.label(for: provider.name) {
-            Text(org.name).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                .listRowSeparator(.hidden)
-        }
-        ForEach(main) { folder in mailboxLink(provider, org, folder) }
-        if !others.isEmpty {
-            let id = provider.name + "\n" + org.id
-            DisclosureGroup("Folders", isExpanded: Binding(get: { !search.isEmpty || expanded.contains(id) }, set: { open in
-                if open { expanded.insert(id) } else { expanded.remove(id) }
-            })) {
-                ForEach(others) { folder in mailboxLink(provider, org, folder) }
-            }
-        }
-    }
-
-    private func mailboxLink(_ provider: ProviderState, _ org: OrganizationEntry, _ folder: Channel) -> some View {
-        let key = ChannelKey(provider: provider.name, channel: ChannelRef(organization: org.id, channel: folder.id))
-        let role = MailboxRole(folder)
-        // Unread mail among what has been loaded; the server keeps no count.
-        let unread = role == .inbox ? store.conversation(key).messages.reduce(0) { $0 + ($1.email?.read == false ? 1 : 0) } : 0
-        return NavigationLink(value: key) {
-            HStack(spacing: 10) {
-                Image(systemName: role.symbol).foregroundStyle(.tint).frame(width: 24)
-                Text(folder.mailboxName).lineLimit(1)
-                Spacer(minLength: 4)
-                if unread > 0 { Text("\(unread)").font(.subheadline).foregroundStyle(.secondary).monospacedDigit() }
-            }
-        }
-    }
+    // MARK: Empty states
 
     @ViewBuilder
     private var emptyState: some View {
-        if store.providers.isEmpty {
+        if chatProviders.isEmpty {
             if store.link == .live {
                 ContentUnavailableView {
-                    Label("No accounts connected", systemImage: "bubble.left.and.bubble.right")
+                    Label("No Chat Accounts", systemImage: "bubble.left.and.bubble.right")
                 } description: {
-                    Text("Add an account to bring your chats here.")
+                    Text("Add Discord or another network to bring your chats here.")
                 } actions: {
-                    Button("Add account") { router.tab = .accounts }.buttonStyle(.borderedProminent)
+                    Button("Add Account") { router.addAccount() }.buttonStyle(.borderedProminent)
                 }
-            } else {
+            } else if store.providers.isEmpty {
                 ProgressView("Loading your chats…")
             }
-        } else if !search.isEmpty && recentChats.isEmpty && providers.allSatisfy({ provider in
-            !provider.standalone.channels.values.contains { matches(provider.standalone.title(of: $0)) }
-                && !provider.organizations.values.contains { org in matches(org.name) || org.scope.channels.values.contains { matches(org.scope.title(of: $0)) } }
-        }) {
-            ContentUnavailableView.search(text: search)
+        } else if !search.isEmpty {
+            let (chats, servers) = searchHits
+            if chats.isEmpty && servers.isEmpty { ContentUnavailableView.search(text: search) }
+        } else if recentItems.isEmpty && serverItems.isEmpty && directItems.isEmpty
+                    && shownProviders.allSatisfy({ $0.status.isReady }) {
+            ContentUnavailableView {
+                Label("No Chats Yet", systemImage: "bubble.left")
+            } description: {
+                Text("Start a conversation to see it here.")
+            } actions: {
+                Button("New Message") { composing = true }.buttonStyle(.borderedProminent)
+            }
         }
     }
 
     // MARK: Data
 
-    private var recentChats: [ChatItem] {
-        guard search.isEmpty else { return [] }
-        return store.recentKeys.compactMap { key -> ChatItem? in
+    private var recentItems: [ChatItem] {
+        store.recentKeys.compactMap { key -> ChatItem? in
             guard filter == nil || key.provider == filter,
-                  let provider = store.providers[key.provider],
+                  let provider = store.providers[key.provider], !accounts.isMail(provider),
                   let channel = provider.channel(key.channel), !channel.isMailbox else { return nil }
             return chatItem(provider, organization: key.channel.organization, channel: channel)
         }
     }
 
-    private func chatItem(_ provider: ProviderState, organization: String?, channel: Channel) -> ChatItem {
-        let key = ChannelKey(provider: provider.name, channel: ChannelRef(organization: organization, channel: channel.id))
-        let scope = provider.scope(organization)
-        let activity = store.activity[key]
-        var subtitle = activity?.last?.preview(in: scope)
-        if let last = activity?.last, let subtitleText = subtitle {
-            if last.author == scope?.me { subtitle = "You: " + subtitleText }
-            else if channel.kind != .direct, let scope { subtitle = scope.userName(last.author) + ": " + subtitleText }
+    private var directItems: [ChatItem] {
+        shownProviders.flatMap { provider in
+            provider.standalone.channels.values
+                .filter { !$0.isContainer && !$0.isMailbox }
+                .map { chatItem(provider, organization: nil, channel: $0) }
         }
-        let place = organization.flatMap { provider.organizations[$0]?.name }
-        return ChatItem(
-            key: key,
-            title: (scope?.title(of: channel) ?? channel.id),
-            subtitle: subtitle,
-            place: place,
-            date: activity?.last?.date,
-            unread: activity?.unread ?? 0,
-            isGroup: channel.kind != .direct,
-            isServerChannel: organization != nil,
-            network: accounts.style(for: provider.name)
-        )
+        .sorted { ($0.date ?? .distantPast, $1.title) > ($1.date ?? .distantPast, $0.title) }
+    }
+
+    private var serverItems: [ServerItem] {
+        // Unread per server, in one pass over the activity.
+        var unread: [String: Int] = [:]
+        for (key, entry) in store.activity where entry.unread > 0 {
+            if let org = key.channel.organization { unread[key.provider + "\n" + org, default: 0] += entry.unread }
+        }
+        let showsAccount = chatProviders.count > 1
+        return shownProviders.flatMap { provider in
+            provider.sortedOrganizations
+                .filter { !$0.scope.channels.values.contains(where: \.isMailbox) }
+                .map { org in
+                    ServerItem(
+                        route: .server(provider: provider.name, organization: org.id),
+                        name: org.name, icon: org.icon,
+                        account: showsAccount ? accounts.label(for: provider.name) : nil,
+                        unread: unread[provider.name + "\n" + org.id] ?? 0
+                    )
+                }
+        }
+    }
+
+    private func chatItem(_ provider: ProviderState, organization: String?, channel: Channel) -> ChatItem {
+        ChatItem(store: store, accounts: accounts, provider: provider, organization: organization, channel: channel)
     }
 
     private func matches(_ text: String) -> Bool {
@@ -304,7 +309,31 @@ struct ChatItem {
     var unread: Int
     var isGroup: Bool
     var isServerChannel: Bool
+    var icon: Media?
     var network: NetworkStyle
+
+    @MainActor
+    init(store: QmsgStore, accounts: AccountsModel, provider: ProviderState, organization: String?, channel: Channel) {
+        let key = ChannelKey(provider: provider.name, channel: ChannelRef(organization: organization, channel: channel.id))
+        let scope = provider.scope(organization)
+        let activity = store.activity[key]
+        var subtitle = activity?.last?.preview(in: scope)
+        if let last = activity?.last, let text = subtitle {
+            if last.author == scope?.me { subtitle = "You: " + text }
+            else if channel.kind != .direct, let scope { subtitle = scope.userName(last.author) + ": " + text }
+        }
+        let org = organization.flatMap { provider.organizations[$0] }
+        self.key = key
+        title = scope?.title(of: channel) ?? channel.id
+        self.subtitle = subtitle
+        place = org?.name
+        date = activity?.last?.date
+        unread = activity?.unread ?? 0
+        isGroup = channel.kind != .direct
+        isServerChannel = organization != nil
+        icon = org?.icon ?? channel.icon
+        network = accounts.style(for: provider.name)
+    }
 }
 
 private struct ChatRow: View {
@@ -313,34 +342,152 @@ private struct ChatRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Group {
-                if item.isServerChannel { ServerTile(name: item.place ?? item.title, size: 40) }
-                else { InitialsAvatar(name: item.title, size: 40) }
-            }
-                .overlay(alignment: .bottomTrailing) {
-                    NetworkBadge(style: item.network, size: 16)
-                        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color(uiColor: .systemBackground), lineWidth: 2))
-                        .offset(x: 3, y: 3)
+                if item.isServerChannel {
+                    IconImage(media: item.icon, size: 44, shape: RoundedRectangle(cornerRadius: 12, style: .continuous)) {
+                        ServerTile(name: item.place ?? item.title, size: 44)
+                    }
+                } else {
+                    IconImage(media: item.icon, size: 44, shape: Circle()) {
+                        InitialsAvatar(name: item.title, size: 44)
+                    }
                 }
-            VStack(alignment: .leading, spacing: 3) {
+            }
+            .overlay(alignment: .bottomTrailing) {
+                NetworkBadge(style: item.network, size: 16)
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color(uiColor: .systemBackground), lineWidth: 2))
+                    .offset(x: 3, y: 3)
+            }
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(item.isServerChannel ? "#\(item.title)" : item.title)
                         .font(.body.weight(item.unread > 0 ? .semibold : .regular)).lineLimit(1)
                     Spacer(minLength: 4)
                     if let date = item.date {
-                        Text(date.chatListStamp).font(.caption).foregroundStyle(item.unread > 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(date.chatListStamp).font(.caption)
+                            .foregroundStyle(item.unread > 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     }
                 }
+                if item.isServerChannel, let place = item.place {
+                    Text(place).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 HStack(alignment: .top) {
-                    Text(item.subtitle ?? item.place ?? (item.isGroup ? "Group" : "Direct message"))
+                    Text(item.subtitle ?? (item.isServerChannel ? "No recent messages" : item.isGroup ? "Group" : "Direct message"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(item.isServerChannel ? 1 : 2)
                     Spacer(minLength: 4)
                     if item.unread > 0 { UnreadBadge(count: item.unread) }
                 }
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+struct ServerItem {
+    var route: ChatRoute
+    var name: String
+    var icon: Media?
+    /// The account, when there's more than one to tell apart.
+    var account: String?
+    var unread: Int
+}
+
+private struct ServerRow: View {
+    let server: ServerItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            IconImage(media: server.icon, size: 36, shape: RoundedRectangle(cornerRadius: 10, style: .continuous)) {
+                ServerTile(name: server.name, size: 36)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(server.name).font(.body.weight(server.unread > 0 ? .semibold : .regular)).lineLimit(1)
+                if let account = server.account {
+                    Text(account).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            if server.unread > 0 { UnreadBadge(count: server.unread) }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Server
+
+/// A server's channels under their categories, like Discord's channel list.
+struct ServerView: View {
+    @Environment(QmsgStore.self) private var store
+    @Environment(AccountsModel.self) private var accounts
+    let provider: String
+    let organization: String
+    @State private var search = ""
+
+    private var org: OrganizationEntry? { store.providers[provider]?.organizations[organization] }
+
+    /// A category and the channels under it; the first may have no category.
+    private struct ChannelGroup: Identifiable {
+        var id: String
+        var title: String?
+        var channels: [ChannelNode]
+    }
+
+    private func groups(_ org: OrganizationEntry) -> [ChannelGroup] {
+        // Channels outside any category come first, as in Discord.
+        var loose = ChannelGroup(id: "", title: nil, channels: [])
+        var groups: [ChannelGroup] = []
+        var inCategory = false
+        for node in org.scope.channelTree() {
+            let channel = node.channel
+            if node.depth == 0 {
+                inCategory = channel.isContainer
+                if inCategory { groups.append(ChannelGroup(id: channel.id, title: org.scope.title(of: channel), channels: [])) }
+            }
+            guard !channel.isContainer,
+                  search.isEmpty || org.scope.title(of: channel).localizedCaseInsensitiveContains(search) else { continue }
+            if inCategory { groups[groups.count - 1].channels.append(node) } else { loose.channels.append(node) }
+        }
+        return ([loose] + groups).filter { !$0.channels.isEmpty }
+    }
+
+    var body: some View {
+        Group {
+            if let org {
+                let groups = groups(org)
+                List {
+                    ForEach(groups) { group in
+                        Section {
+                            ForEach(group.channels) { node in
+                                let key = ChannelKey(provider: provider, channel: ChannelRef(organization: organization, channel: node.channel.id))
+                                NavigationLink(value: key) {
+                                    ServerChannelRow(title: org.scope.title(of: node.channel), kind: node.channel.kind, unread: store.activity[key]?.unread ?? 0)
+                                }
+                                // Threads sit under their channel; a category's own children don't indent.
+                                .padding(.leading, CGFloat(max(0, node.depth - (group.title == nil ? 0 : 1))) * 16)
+                            }
+                        } header: {
+                            if let title = group.title { Text(title) }
+                        }
+                    }
+                }
+                .overlay {
+                    if groups.isEmpty {
+                        if search.isEmpty {
+                            ContentUnavailableView("No Channels", systemImage: "number", description: Text("You can't see any channels in \(org.name)."))
+                        } else {
+                            ContentUnavailableView.search(text: search)
+                        }
+                    }
+                }
+                .searchable(text: $search, prompt: "Search channels")
+            } else {
+                ContentUnavailableView("Server Unavailable", systemImage: "questionmark.square.dashed", description: Text("You may have left this server."))
+            }
+        }
+        .navigationTitle(org?.name ?? "Server")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(for: ChannelKey.self) { ChatView(key: $0) }
     }
 }
 
@@ -361,9 +508,9 @@ private struct ServerChannelRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol).font(.footnote).foregroundStyle(.tertiary).frame(width: 18)
-            Text(title).font(.subheadline).fontWeight(unread > 0 ? .semibold : .regular)
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.subheadline).foregroundStyle(.secondary).frame(width: 22)
+            Text(title).fontWeight(unread > 0 ? .semibold : .regular)
                 .foregroundStyle(unread > 0 ? .primary : .secondary).lineLimit(1)
             Spacer(minLength: 4)
             if unread > 0 { UnreadBadge(count: unread) }

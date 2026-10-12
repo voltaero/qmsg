@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -36,6 +37,83 @@ func testProvider(t *testing.T) (*provider, *fakemail.Server) {
 func inbox() qmsg.ChannelRef {
 	return qmsg.ChannelRef{Organization: qmsg.Str(fakemail.Address), Channel: "INBOX"}
 }
+
+func TestInboxListsLargeMailWithoutDownloadingBodies(t *testing.T) {
+	p, s := testProvider(t)
+	raw := []byte("From: bob@example.test\r\nTo: alice@example.test\r\nSubject: Big mail\r\n\r\n" + strings.Repeat("x", maxMail+1))
+	if e := s.Append("INBOX", raw); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.User.Create("All Mail", nil); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.Append("All Mail", []byte("From: bob@example.test\r\nSubject: Archived only\r\n\r\nArchived")); e != nil {
+		t.Fatal(e)
+	}
+	if e := p.list(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	page, e := p.history(context.Background(), inbox(), nil, 20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(page.Messages) != 1 || page.Messages[0].Email.Subject != "Big mail" {
+		t.Fatalf("wrong inbox: %v", page.Messages)
+	}
+	if mailSize(page.Messages[0]) > 4096 {
+		t.Fatal("folder listing fetched the body")
+	}
+}
+
+func TestInboxPageUsesBulkMetadataRequests(t *testing.T) {
+	p, s := testProvider(t)
+	for i := 0; i < 20; i++ {
+		if e := s.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); e != nil {
+			t.Fatal(e)
+		}
+	}
+	page, e := p.history(context.Background(), inbox(), nil, 20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(page.Messages) != 20 {
+		t.Fatal("page lost messages")
+	}
+	if n := s.Fetches.Load(); n > 2 {
+		t.Fatalf("listing fetched messages one by one: %d requests", n)
+	}
+	if s.FullBodyFetches.Load() != 0 {
+		t.Fatal("listing downloaded message bodies")
+	}
+}
+
+type testMailLiteral struct{ *bytes.Reader }
+
+func (r testMailLiteral) Size() int64 { return int64(r.Len()) }
+
+func TestInboxOrdersByArrivalRatherThanUID(t *testing.T) {
+	p, s := testProvider(t)
+	for i, age := range []time.Duration{0, -time.Hour} {
+		raw := []byte(fmt.Sprintf("From: bob@example.test\r\nSubject: Mail %d\r\n\r\nBody", i))
+		if _, e := s.User.Append("INBOX", testMailLiteral{bytes.NewReader(raw)}, &imap.AppendOptions{Time: time.Now().Add(age)}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	page, e := p.history(context.Background(), inbox(), nil, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if page.Messages[0].Email.Subject != "Mail 0" {
+		t.Fatal("newest arrival is missing from the first page")
+	}
+	older, e := p.history(context.Background(), inbox(), page.NextCursor, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(older.Messages) != 1 || older.Messages[0].Email.Subject != "Mail 1" {
+		t.Fatal("date-ordered pagination missed a mail")
+	}
+}
 func TestMailServerRoundTrip(t *testing.T) {
 	p, s := testProvider(t)
 	ctx := context.Background()
@@ -66,7 +144,10 @@ func TestMailServerRoundTrip(t *testing.T) {
 	if len(page.Messages) != 5 || page.NextCursor == nil {
 		t.Fatalf("page: %v", page)
 	}
-	m := page.Messages[0]
+	m, e := p.get(ctx, inbox(), page.Messages[0].ID)
+	if e != nil {
+		t.Fatal(e)
+	}
 	if m.Email.Subject != "Hello 😀" || m.Email.HTML == nil || m.Email.Read || len(m.Content) != 2 {
 		t.Fatalf("MIME/state: %#v", m)
 	}
@@ -365,5 +446,54 @@ func TestChangedFoldersCompareModSeq(t *testing.T) {
 	now["INBOX"] = starred
 	if got := changedFolders(old, now); len(got) != 1 || got[0] != "INBOX" {
 		t.Fatalf("flag-only change: %v", got)
+	}
+}
+
+func TestSyncRemovesLoadedMailArchivedElsewhere(t *testing.T) {
+	p, s := testProvider(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if e := s.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if _, e := p.sync(ctx); e != nil {
+		t.Fatal(e)
+	}
+	page, e := p.history(ctx, inbox(), nil, 20)
+	if e != nil {
+		t.Fatal(e)
+	}
+	old := page.Messages[len(page.Messages)-1].ID
+	if !p.loadedMail["INBOX"][old] {
+		t.Fatal("loaded identity wasn't recorded")
+	}
+	c, _, e := p.openIMAP(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer c.Close()
+	selected, e := c.Select("INBOX", nil).Wait()
+	if e != nil {
+		t.Fatal(e)
+	}
+	uid, e := parseID(old, selected.UIDValidity)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); e != nil {
+		t.Fatal(e)
+	}
+	if e = c.UIDExpunge(imap.UIDSetNum(uid)).Close(); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = p.sync(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if p.loadedMail["INBOX"][old] {
+		t.Fatal("archived mail remains loaded in Inbox")
+	}
+	if len(p.loadedMail["INBOX"]) != 2 {
+		t.Fatal("unrelated Inbox mail was removed")
 	}
 }

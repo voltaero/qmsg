@@ -35,6 +35,8 @@ type Server struct {
 	oauth                           *http.Server
 	Exchanges                       atomic.Int64
 	Refreshes                       atomic.Int64
+	Fetches                         atomic.Int64
+	FullBodyFetches                 atomic.Int64
 	RejectRefresh                   atomic.Bool
 	IMAP, SMTP, StartTLS, OAuth, CA string
 	User                            *imapmemserver.User
@@ -175,6 +177,16 @@ func (s *Server) Snapshot() ([][]byte, [][]string) {
 type session struct {
 	imapserver.Session
 	s *Server
+}
+
+func (s *session) Fetch(w *imapserver.FetchWriter, set imap.NumSet, opts *imap.FetchOptions) error {
+	s.s.Fetches.Add(1)
+	for _, section := range opts.BodySection {
+		if section.Specifier == "" && len(section.Part) == 0 {
+			s.s.FullBodyFetches.Add(1)
+		}
+	}
+	return s.Session.Fetch(w, set, opts)
 }
 
 func (s *session) Append(mailbox string, r imap.LiteralReader, opts *imap.AppendOptions) (*imap.AppendData, error) {

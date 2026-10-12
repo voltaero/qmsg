@@ -96,7 +96,7 @@ public final class Conversation: Identifiable {
             reachedStart = page.nextCursor == nil
         }
         // Prefer what events said since the request went out.
-        result += incoming.map { changed.contains($0.id) ? current[$0.id] ?? $0 : $0 }
+        result += incoming.map { changed.contains($0.id) ? current[$0.id] ?? $0 : $0.keepingMailBody(from: current[$0.id]) }
         result += messages.filter { changed.contains($0.id) && !pageIDs.contains($0.id) }
         messages = Self.sorted(Self.unique(result.filter { !deleted.contains($0.id) }))
         loaded = true
@@ -118,7 +118,7 @@ public final class Conversation: Identifiable {
 
     func merge(_ incoming: [Message]) {
         var byID = Dictionary(messages.map { ($0.id, $0) }) { $1 }
-        for message in incoming { byID[message.id] = message }
+        for message in incoming { byID[message.id] = message.keepingMailBody(from: byID[message.id]) }
         messages = Self.sorted(Array(byID.values))
         settlePending()
     }
@@ -128,7 +128,12 @@ public final class Conversation: Identifiable {
     }
 
     static func precedes(_ a: Message, _ b: Message) -> Bool {
-        (a.sentAt, a.id) < (b.sentAt, b.id)
+        if a.sentAt == b.sentAt, a.email != nil, b.email != nil,
+           let left = a.id.split(separator: ":").last.flatMap({ UInt64($0) }),
+           let right = b.id.split(separator: ":").last.flatMap({ UInt64($0) }), left != right {
+            return left < right
+        }
+        return (a.sentAt, a.id) < (b.sentAt, b.id)
     }
 
     private static func unique(_ messages: [Message]) -> [Message] {

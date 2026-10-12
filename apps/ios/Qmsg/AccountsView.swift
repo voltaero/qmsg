@@ -23,6 +23,7 @@ final class AccountsModel {
         var health: AccountHealth { AccountHealth(status: live?.status, enabled: enabled) }
         var style: NetworkStyle { NetworkStyle(managed?.type ?? name) }
         var typeLabel: String { type?.label ?? managed?.type ?? "Account" }
+        var identity: String? { live?.accountIdentity ?? managed?.settings["address"] }
     }
 
     var types: [ProviderType] { catalog?.types ?? [] }
@@ -56,6 +57,14 @@ final class AccountsModel {
         return label.isEmpty ? provider : label
     }
 
+    /// A mail account, which the Mail tab shows instead of Chats. Its type
+    /// says so before its folders have arrived.
+    func isMail(_ provider: ProviderState) -> Bool {
+        let type = (type(for: provider.name) ?? "").lowercased()
+        if type.contains("mail") || type.contains("imap") { return true }
+        return provider.organizations.values.contains { $0.scope.channels.values.contains(where: \.isMailbox) }
+    }
+
     func load(_ store: QmsgStore) async {
         loading = true
         defer { loading = false }
@@ -68,112 +77,7 @@ final class AccountsModel {
     }
 }
 
-struct AccountsView: View {
-    @Environment(QmsgStore.self) private var store
-    @Environment(AccountsModel.self) private var model
-    @Environment(AppRouter.self) private var router
-    @State private var adding = false
-    @State private var removing: String?
-    @State private var busy: String?
-    @State private var error: String?
-
-    var body: some View {
-        @Bindable var router = router
-        NavigationStack(path: $router.accountPath) {
-            List {
-                if let error = error ?? model.error {
-                    Section { ErrorNote(message: error) { self.error = nil; model.error = nil } }
-                }
-                let items = model.items(store)
-                Section {
-                    ForEach(items) { item in
-                        NavigationLink(value: item.name) { AccountRow(item: item, busy: busy == item.name) }
-                            .swipeActions(edge: .trailing) {
-                                if item.managed != nil {
-                                    Button("Remove", systemImage: "trash", role: .destructive) { removing = item.name }
-                                }
-                            }
-                            .swipeActions(edge: .leading) {
-                                if let managed = item.managed {
-                                    Button(managed.enabled ? "Turn off" : "Turn on", systemImage: managed.enabled ? "pause.circle" : "play.circle") {
-                                        Task { await setEnabled(!managed.enabled, managed) }
-                                    }.tint(managed.enabled ? .gray : .green)
-                                }
-                            }
-                    }
-                } footer: {
-                    if !items.isEmpty { Text("Swipe an account to turn it off or remove it.") }
-                }
-                Section {
-                    Button { adding = true } label: { Label("Add account", systemImage: "plus.circle.fill") }
-                        .disabled(model.types.isEmpty)
-                } footer: {
-                    if model.catalog != nil && model.types.isEmpty {
-                        Text("Your server has no chat networks installed.")
-                    }
-                }
-            }
-            .overlay {
-                if model.items(store).isEmpty {
-                    if model.loading {
-                        ProgressView()
-                    } else {
-                        ContentUnavailableView {
-                            Label("No accounts yet", systemImage: "person.crop.circle.badge.plus")
-                        } description: {
-                            Text("Choose a chat network to see its chats here.")
-                        } actions: {
-                            Button("Add account") { adding = true }.buttonStyle(.borderedProminent).disabled(model.types.isEmpty)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Accounts")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Add account", systemImage: "plus") { adding = true }.disabled(model.types.isEmpty)
-                }
-            }
-            .refreshable { await model.load(store) }
-            .navigationDestination(for: String.self) { AccountDetailView(name: $0) }
-            .sheet(isPresented: $adding) {
-                NavigationStack {
-                    AddAccountView { name in
-                        adding = false
-                        router.accountPath = [name]
-                    }
-                }
-            }
-            .confirmationDialog("Remove \(removing.map { model.label(for: $0) } ?? "account")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
-                if let name = removing {
-                    Button("Remove account", role: .destructive) { Task { await remove(name) } }
-                }
-            } message: {
-                Text("Its chats disappear from qmsg and its saved sign-in is deleted from your server. Nothing is deleted on the network itself.")
-            }
-        }
-    }
-
-    private func setEnabled(_ enabled: Bool, _ managed: ManagedProvider) async {
-        busy = managed.name
-        defer { busy = nil }
-        do {
-            try await store.configureProvider(name: managed.name, type: managed.type, settings: managed.settings, enabled: enabled, label: managed.label)
-            await model.load(store)
-        } catch { self.error = QmsgStore.describe(error) }
-    }
-
-    private func remove(_ name: String) async {
-        busy = name
-        defer { busy = nil }
-        do {
-            try await store.removeProvider(name: name)
-            await model.load(store)
-        } catch { self.error = QmsgStore.describe(error) }
-    }
-}
-
-private struct AccountRow: View {
+struct AccountRow: View {
     let item: AccountsModel.Item
     let busy: Bool
 
@@ -183,6 +87,9 @@ private struct AccountRow: View {
                 .opacity(item.enabled ? 1 : 0.45)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.label).font(.body.weight(.medium))
+                if let identity = item.identity, !identity.isEmpty {
+                    Text(identity).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
                 HStack(spacing: 6) {
                     Text(item.typeLabel)
                     Text("·")
@@ -275,6 +182,9 @@ struct AccountDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.label).font(.title3.bold())
                     Text(item.typeLabel).foregroundStyle(.secondary)
+                    if let identity = item.identity, !identity.isEmpty {
+                        Text(identity).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                 }
             }.padding(.vertical, 4)
             HStack {

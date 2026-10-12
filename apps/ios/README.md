@@ -82,30 +82,33 @@ uses normal certificate trust when the payload has no private certificate.
 
 ## Using the app
 
-The app has three tabs:
+The app has Chats and Settings, plus Mail when a mail account is set up:
 
-- **Chats** is one inbox across accounts. Recent chats come first, then each
-  account's direct messages and its servers, which expand to show channels.
+- **Chats** lists recent chats, servers and direct messages across accounts.
+  Opening a server shows its channels grouped by category.
   Chips at the top filter by account. Accounts that need you, such as one
   waiting for sign-in, show as a banner that opens that account.
-  Mail accounts list their folders instead, Inbox and special folders first.
+- **Mail** lists folders by account, Inbox and special folders first.
   A folder opens as a message list, newest first; a message opens with its
   sender, recipients, body and attachments. HTML mail renders with scripts,
   network loads and remote images blocked; links open in Safari. Reply,
   compose, star, read state, move and trash use the provider's mail actions.
-- **Accounts** lists every account on the server with its network and status.
-  Tap **+** to add one: pick a network your server has installed, give it a
+  Mail lists load headers first and fetch a full body when you open a message.
+  Reopening a folder refreshes its contents; external moves also remove loaded
+  rows during syncing. Large mail does not block the rest of the list.
+- **Settings** lists accounts first, then the server and paired devices.
+  Tap **Add Account** to pick a network your server has installed, give it a
   name like "Work", and fill in any connection fields. You can add several
   accounts of the same network. Open an account to sign in, rename it, edit
   its connection details, turn it off, sign out or remove it. Swipe a row to
   turn it off or remove it. Removing asks first.
-- **Settings** shows the server connection and paired devices, and unpairs
-  this phone.
+  Settings also lets you unpair this phone.
 
 Tap the compose button in Chats to search contacts and start a conversation.
 Long-press a message to reply, react, copy, edit or delete. Type **@** in a
 Discord or Echo chat to pick someone to mention; mentions in messages show as
-names. Server channels read as a feed, direct chats as bubbles. The chat stays
+names. Server channels read as a feed, direct chats as bubbles. Tap **Members**
+to see the chat's members or the available server members. The chat stays
 where you are while reading older messages and shows a jump-to-latest button
 instead of scrolling for every new message. A send that
 fails shows **Not sent** with **Retry**. A send the server couldn't confirm

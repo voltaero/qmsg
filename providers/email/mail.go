@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +19,9 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message"
+	gomail "github.com/emersion/go-message/mail"
+	"github.com/emersion/go-message/textproto"
 	"github.com/emersion/go-sasl"
 	smtp "github.com/emersion/go-smtp"
 	qmsg "github.com/voltaero/qmsg/sdk/go"
@@ -255,6 +260,25 @@ func (p *provider) sync(ctx context.Context) ([]string, error) {
 		states[ch.ID] = statusState(d)
 	}
 	changed := changedFolders(p.states, states)
+	for _, folder := range changed {
+		if len(p.loadedMail[folder]) == 0 {
+			continue
+		}
+		selected, err := c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
+		if err != nil {
+			return nil, err
+		}
+		result, err := c.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+		if err != nil {
+			return nil, err
+		}
+		ref := qmsg.ChannelRef{Organization: qmsg.Str(p.cfg.address), Channel: folder}
+		for _, id := range p.forgetMissingMail(folder, selected.UIDValidity, result.AllUIDs()) {
+			if p.cx != nil {
+				p.cx.Emit(qmsg.Deleted{Channel: ref, ID: id})
+			}
+		}
+	}
 	p.folders = folders
 	p.states = states
 	p.moveSupported = c.Caps().Has(imap.CapMove)
@@ -286,7 +310,7 @@ func parseID(id string, validity uint32) (imap.UID, error) {
 }
 func fetchMail(c *imapclient.Client, ref qmsg.ChannelRef, validity uint32, uid imap.UID) (qmsg.Message, error) {
 	section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: maxMail + 1}}
-	rows, e := c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true, Flags: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
+	rows, e := c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true, Flags: true, InternalDate: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
 	if e != nil {
 		return qmsg.Message{}, e
 	}
@@ -299,6 +323,9 @@ func fetchMail(c *imapclient.Client, ref qmsg.ChannelRef, validity uint32, uid i
 			m, e := parseMail(r.FindBodySection(section), ref, mailID(validity, uid), flags)
 			if e != nil {
 				return m, qmsg.ErrProvider{Code: "mail_format", Message: e.Error()}
+			}
+			if !r.InternalDate.IsZero() {
+				m.SentAt = uint64(r.InternalDate.UnixMilli())
 			}
 			return m, nil
 		}
@@ -324,12 +351,6 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 			}
 		}
 		criteria := &imap.SearchCriteria{}
-		if before != 0 {
-			if before == 1 {
-				return nil
-			}
-			criteria.UID = []imap.UIDSet{imap.UIDSet{{Start: 1, Stop: before - 1}}}
-		}
 		data, e := c.UIDSearch(criteria, nil).Wait()
 		if e != nil {
 			return e
@@ -338,25 +359,44 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 		if len(uids) > maxMailbox {
 			return fmt.Errorf("mailbox exceeds UID limit")
 		}
-		sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+		if cursor == nil {
+			for _, id := range p.forgetMissingMail(ref.Channel, s.UIDValidity, uids) {
+				if p.cx != nil {
+					p.cx.Emit(qmsg.Deleted{Channel: ref, ID: id})
+				}
+			}
+		}
+		uids, e = p.orderedMail(c, ref.Channel, s.UIDValidity, uids)
+		if e != nil {
+			return e
+		}
+		if before != 0 {
+			index := -1
+			for i, uid := range uids {
+				if uid == before {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				return qmsg.ErrUnknownMessage{ID: *cursor}
+			}
+			uids = uids[:index]
+		}
 		start := max(0, len(uids)-n)
-		total := 0
+		if start == len(uids) {
+			return nil
+		}
+		byUID, err := fetchMailHeaders(c, ref, s.UIDValidity, uids[start:])
+		if err != nil {
+			return err
+		}
 		for i := len(uids) - 1; i >= start; i-- {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if m, ok := byUID[uids[i]]; ok {
+				page.Messages = append(page.Messages, m)
+				p.know(m)
+				p.rememberMail(ref.Channel, m.ID)
 			}
-			m, e := fetchMail(c, ref, s.UIDValidity, uids[i])
-			if e != nil {
-				return e
-			}
-			size := mailSize(m)
-			if total+size > 4<<20 && len(page.Messages) > 0 {
-				page.NextCursor = qmsg.Str(page.Messages[len(page.Messages)-1].ID)
-				break
-			}
-			total += size
-			p.know(m)
-			page.Messages = append(page.Messages, m)
 		}
 		if start > 0 && len(page.Messages) > 0 {
 			page.NextCursor = qmsg.Str(page.Messages[len(page.Messages)-1].ID)
@@ -364,6 +404,48 @@ func (p *provider) history(ctx context.Context, ref qmsg.ChannelRef, cursor *str
 		return nil
 	})
 	return page, e
+}
+
+type mailOrder struct {
+	folder       string
+	validity     uint32
+	ids, ordered []imap.UID
+}
+
+// A UID records insertion order, not arrival date: moving an old message
+// back into Inbox can give it a new UID. Cache one folder's date order so
+// reopening and paging don't rescan its metadata.
+func (p *provider) orderedMail(c *imapclient.Client, folder string, validity uint32, ids []imap.UID) ([]imap.UID, error) {
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if cache := p.mailOrder; cache != nil && cache.folder == folder && cache.validity == validity && reflect.DeepEqual(cache.ids, ids) {
+		return cache.ordered, nil
+	}
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	dates := map[imap.UID]time.Time{}
+	cmd := c.Fetch(imap.UIDSetNum(ids...), &imap.FetchOptions{UID: true, InternalDate: true})
+	defer cmd.Close()
+	for row := cmd.Next(); row != nil; row = cmd.Next() {
+		data, err := row.Collect()
+		if err != nil {
+			return nil, err
+		}
+		dates[data.UID] = data.InternalDate
+	}
+	if err := cmd.Close(); err != nil {
+		return nil, err
+	}
+	ordered := append([]imap.UID(nil), ids...)
+	sort.Slice(ordered, func(i, j int) bool {
+		a, b := dates[ordered[i]], dates[ordered[j]]
+		if a.Equal(b) {
+			return ordered[i] < ordered[j]
+		}
+		return a.Before(b)
+	})
+	p.mailOrder = &mailOrder{folder: folder, validity: validity, ids: ids, ordered: ordered}
+	return ordered, nil
 }
 func (p *provider) get(ctx context.Context, ref qmsg.ChannelRef, id string) (qmsg.Message, error) {
 	var m qmsg.Message
@@ -377,6 +459,7 @@ func (p *provider) get(ctx context.Context, ref qmsg.ChannelRef, id string) (qms
 	})
 	if e == nil {
 		p.know(m)
+		p.rememberMail(ref.Channel, m.ID)
 	}
 	return m, e
 }
@@ -386,8 +469,12 @@ func (p *provider) flags(ctx context.Context, fc qmsg.InMessage, flag imap.Flag,
 		if e != nil {
 			return e
 		}
-		if _, e = fetchMail(c, fc.Channel, s.UIDValidity, uid); e != nil {
+		rows, e := fetchMailHeaders(c, fc.Channel, s.UIDValidity, []imap.UID{uid})
+		if e != nil {
 			return e
+		}
+		if _, found := rows[uid]; !found {
+			return qmsg.ErrUnknownMessage{ID: fc.ID}
 		}
 		op := imap.StoreFlagsDel
 		if add {
@@ -396,7 +483,11 @@ func (p *provider) flags(ctx context.Context, fc qmsg.InMessage, flag imap.Flag,
 		if e = c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{flag}}, nil).Close(); e != nil {
 			return e
 		}
-		m, e := fetchMail(c, fc.Channel, s.UIDValidity, uid)
+		rows, e = fetchMailHeaders(c, fc.Channel, s.UIDValidity, []imap.UID{uid})
+		m, found := rows[uid]
+		if e == nil && !found {
+			return qmsg.ErrUnknownMessage{ID: fc.ID}
+		}
 		if e == nil && p.cx != nil {
 			p.cx.Emit(qmsg.Received{Message: m})
 		}
@@ -574,4 +665,58 @@ func definiteSMTPError(e error) qmsg.CommandError {
 		message = se.Message
 	}
 	return qmsg.ErrProvider{Code: code, Message: validText(message), Details: qmsg.Record{"delivery_unknown": qmsg.Boolean(false)}}
+}
+
+// Only keep identities the client has loaded, so external moves can remove
+// old rows without downloading the mailbox again.
+func (p *provider) rememberMail(folder, id string) {
+	if p.loadedMail == nil {
+		p.loadedMail = map[string]map[string]bool{}
+	}
+	if p.loadedMail[folder] == nil {
+		p.loadedMail[folder] = map[string]bool{}
+	}
+	p.loadedMail[folder][id] = true
+}
+func (p *provider) forgetMissingMail(folder string, validity uint32, uids []imap.UID) []string {
+	present := map[string]bool{}
+	for _, uid := range uids {
+		present[mailID(validity, uid)] = true
+	}
+	gone := []string{}
+	for id := range p.loadedMail[folder] {
+		if !present[id] {
+			gone = append(gone, id)
+			delete(p.loadedMail[folder], id)
+		}
+	}
+	sort.Strings(gone)
+	return gone
+}
+
+func fetchMailHeaders(c *imapclient.Client, ref qmsg.ChannelRef, validity uint32, uids []imap.UID) (map[imap.UID]qmsg.Message, error) {
+	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: 64 << 10}}
+	set := imap.UIDSetNum(uids...)
+	rows, err := c.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, InternalDate: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
+	if err != nil {
+		return nil, err
+	}
+	byUID := map[imap.UID]qmsg.Message{}
+	for _, row := range rows {
+		header, err := textproto.ReadHeader(bufio.NewReader(bytes.NewReader(row.FindBodySection(section))))
+		if err != nil {
+			return nil, fmt.Errorf("cannot read mail headers: %w", err)
+		}
+		flags := []string{}
+		for _, flag := range row.Flags {
+			flags = append(flags, string(flag))
+		}
+		m := mailHeader(gomail.Header{Header: message.Header{Header: header}}, ref, mailID(validity, row.UID), flags)
+		m.Content = []qmsg.Content{qmsg.ContentCustom{Kind: "email-summary"}}
+		if !row.InternalDate.IsZero() {
+			m.SentAt = uint64(row.InternalDate.UnixMilli())
+		}
+		byUID[row.UID] = m
+	}
+	return byUID, nil
 }

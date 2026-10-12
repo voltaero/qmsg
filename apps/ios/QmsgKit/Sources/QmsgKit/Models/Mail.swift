@@ -86,6 +86,20 @@ extension Email {
 }
 
 extension Message {
+    public var mailNeedsBody: Bool {
+        content.contains { if case .custom(let kind, _) = $0 { return kind == "email-summary" }; return false }
+    }
+
+    /// IMAP message bodies are immutable for an identity; refreshing flags
+    /// and headers must not discard a body already fetched for that identity.
+    func keepingMailBody(from previous: Message?) -> Message {
+        guard mailNeedsBody, let previous, previous.email != nil, !previous.mailNeedsBody else { return self }
+        var result = self
+        result.content = previous.content
+        result.email?.html = previous.email?.html
+        result.email?.contentIDs = previous.email?.contentIDs ?? [:]
+        return result
+    }
     /// The plain text body of a mail, or its HTML as text.
     public var mailBody: String {
         let text = content.compactMap(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)

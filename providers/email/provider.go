@@ -27,6 +27,8 @@ type provider struct {
 	cfg           config
 	cred          credential
 	folders       map[string]qmsg.Channel
+	loadedMail    map[string]map[string]bool
+	mailOrder     *mailOrder
 	states        map[string]folderState
 	published     []qmsg.Channel
 	reported      qmsg.ProviderStatus
@@ -402,6 +404,8 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		p.cred = credential{}
 		p.folders = map[string]qmsg.Channel{}
 		p.states = nil
+		p.loadedMail = nil
+		p.mailOrder = nil
 		p.published = nil
 		p.known = map[string]qmsg.EmailAddress{}
 		p.cx.Directory(qmsg.OrganizationRemoved{ID: p.cfg.address})

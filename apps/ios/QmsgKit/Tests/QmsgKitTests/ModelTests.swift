@@ -3,6 +3,49 @@ import Testing
 @testable import QmsgKit
 
 @Suite struct ModelTests {
+    @MainActor @Test func mailWithTheSameDateUsesNumericUIDOrder() throws {
+        let nine = try mail("1:9", read: false, html: nil, contentIDs: [:])
+        let ten = try mail("1:10", read: false, html: nil, contentIDs: [:])
+        #expect(Conversation.sorted([ten, nine]).map(\.id) == ["1:9", "1:10"])
+    }
+
+    @MainActor @Test func mailSummaryUpdatesFlagsWithoutDroppingTheLoadedBody() throws {
+        var full = try mail("1:9", read: false, html: "<p>Body</p>", contentIDs: [:])
+        full.content = [.text("Body")]
+        var summary = full
+        summary.content = [.custom(kind: "email-summary", data: [])]
+        summary.email?.html = nil
+        summary.email?.read = true
+        let conversation = Conversation(key: ChannelKey(provider: "gmail", channel: full.channel))
+        conversation.merge([full])
+        conversation.merge([summary])
+        #expect(conversation.message(full.id)?.mailBody == "Body")
+        #expect(conversation.message(full.id)?.email?.read == true)
+        #expect(conversation.message(full.id)?.mailNeedsBody == false)
+    }
+
+    @Test func accountIdentityUsesTheSignedInUserRatherThanTheProviderLabel() {
+        let discord = ProviderState(id: ProviderID(name: "discord", instance: 1), standalone: Scope(me: "1", users: ["1": User(id: "1", name: "Ana", username: "ana.dev")]))
+        #expect(discord.accountIdentity == "Ana · @ana.dev")
+        let mail = ProviderState(id: ProviderID(name: "gmail", instance: 1), standalone: Scope(me: "ana@example.com"))
+        #expect(mail.accountIdentity == "ana@example.com")
+    }
+    @Test func mentionSuggestionsStayWithinTheChat() {
+        var chat = channel("c")
+        chat.members = ["me", "ana"]
+        let scope = Scope(me: "me", users: [
+            "me": User(id: "me", name: "Me"),
+            "ana": User(id: "ana", name: "Ana"),
+            "other": User(id: "other", name: "Other")
+        ])
+        #expect(scope.mentionSuggestions(in: chat, recentAuthors: ["other"], query: "").map(\.id) == ["ana"])
+        chat.members = []
+        #expect(scope.mentionSuggestions(in: chat, recentAuthors: ["other"], query: "").isEmpty)
+        chat.members = nil
+        #expect(scope.mentionSuggestions(in: chat, recentAuthors: ["ana"], query: "").map(\.id) == ["ana"])
+        #expect(scope.mentionSuggestions(in: chat, recentAuthors: ["ana"], query: "oth").map(\.id) == ["other"])
+    }
+
     @MainActor @Test func pendingSendNonceFitsDiscordAndRetryGetsANewNonce() throws {
         let store = QmsgStore(accounts: MemoryAccountStore())
         let key = ChannelKey(provider: "discord", channel: ChannelRef(organization: nil, channel: "test"))

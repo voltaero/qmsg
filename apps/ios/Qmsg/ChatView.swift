@@ -1,6 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
+import PhotosUI
+// The Linux toolchain needs the SwiftUI overlay imported explicitly.
+import _PhotosUI_SwiftUI
 import QmsgKit
 
 struct ChatView: View {
@@ -11,6 +14,9 @@ struct ChatView: View {
     @State private var attachments: [QmsgStore.Attachment] = []
     @State private var reply: Message?
     @State private var importing = false
+    @State private var showingMembers = false
+    @State private var pickingPhotos = false
+    @State private var photos: [PhotosPickerItem] = []
     @State private var actionMessage: Message?
     @State private var tool: MessageTool = .react
     @State private var deleting: Message?
@@ -157,7 +163,12 @@ struct ChatView: View {
         }
         .navigationTitle(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel)
         .navigationBarTitleDisplayMode(.inline)
+        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Members", systemImage: "person.2") { showingMembers = true }
+                    .disabled(channel == nil)
+            }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
                     Text(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel).font(.headline).lineLimit(1)
@@ -178,6 +189,9 @@ struct ChatView: View {
             }
             .presentationDetents(tool == .react ? [.medium] : [.medium, .large])
         }
+        .sheet(isPresented: $showingMembers) {
+            NavigationStack { ChatMembersView(key: key) }
+        }
         .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
             if let message = deleting {
                 Button("Delete for everyone", role: .destructive) { Task { await delete(message) } }
@@ -194,6 +208,36 @@ struct ChatView: View {
                     guard data.count <= MediaLoader.maxDownload else { throw MediaError.tooLarge }
                     let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
                     attachments.append(.init(name: url.lastPathComponent, mime: mime, data: data))
+                }
+            } catch { self.error = QmsgStore.describe(error) }
+        }
+        .photosPicker(isPresented: $pickingPhotos, selection: $photos, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
+        .onChange(of: photos) { _, items in
+            guard !items.isEmpty else { return }
+            photos = []
+            Task { await addPhotos(items) }
+        }
+    }
+
+    private var placeholder: String {
+        guard let channel, let scope else { return "Message" }
+        let title = scope.title(of: channel)
+        return isFeed ? "Message #\(title)" : "Message \(title)"
+    }
+
+    /// Photos come as JPEG unless the library has them in a common format,
+    /// since few networks take HEIC.
+    private func addPhotos(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                guard data.count <= MediaLoader.maxDownload else { throw MediaError.tooLarge }
+                let type = item.supportedContentTypes.first { $0.conforms(to: .image) || $0.conforms(to: .movie) }
+                if let type, [UTType.jpeg, .png, .gif].contains(type) || type.conforms(to: .movie),
+                   let mime = type.preferredMIMEType {
+                    attachments.append(.init(name: "Photo.\(type.preferredFilenameExtension ?? "jpg")", mime: mime, data: data))
+                } else if let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.9) {
+                    attachments.append(.init(name: "Photo.jpg", mime: "image/jpeg", data: jpeg))
                 }
             } catch { self.error = QmsgStore.describe(error) }
         }
@@ -275,12 +319,17 @@ struct ChatView: View {
                 mentionPicker
             }
             HStack(alignment: .bottom, spacing: 8) {
-                Button("Attach file", systemImage: "plus") { importing = true }
+                Menu {
+                    Button("Photos", systemImage: "photo.on.rectangle") { pickingPhotos = true }
+                    Button("Files", systemImage: "folder") { importing = true }
+                } label: {
+                    Label("Attach", systemImage: "plus")
+                }
                     .labelStyle(.iconOnly).font(.title3.weight(.medium))
                     .foregroundStyle(.primary)
                     .frame(width: 44, height: 44)
                     .chatGlass(in: Circle(), interactive: true)
-                ComposerTextView(text: $text) { attachments.append(contentsOf: $0) }
+                ComposerTextView(text: $text, placeholder: placeholder) { attachments.append(contentsOf: $0) }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                     .chatGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 Button("Send", systemImage: "arrow.up") { send() }
@@ -314,21 +363,13 @@ struct ChatView: View {
     }
 
     private var mentionCandidates: [User] {
-        guard let query = mentionQuery?.lowercased(), let scope else { return [] }
-        let members = channel?.members ?? []
-        let pool = members.isEmpty ? Array(scope.users.values) : members.compactMap { scope.users[$0] }
-        return pool
-            .filter { $0.id != scope.me && !$0.name.isEmpty && $0.name != $0.id }
-            .filter { query.isEmpty || $0.name.lowercased().contains(query) || ($0.username?.lowercased().contains(query) ?? false) }
-            .sorted { a, b in
-                let ap = a.name.lowercased().hasPrefix(query), bp = b.name.lowercased().hasPrefix(query)
-                return ap != bp ? ap : a.name.localizedLowercase < b.name.localizedLowercase
-            }
-            .prefix(6).map { $0 }
+        guard let query = mentionQuery, let scope, let channel else { return [] }
+        return scope.mentionSuggestions(in: channel, recentAuthors: conversation.messages.suffix(50).map(\.author), query: query)
     }
 
     private var mentionPicker: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 0) {
             ForEach(mentionCandidates) { user in
                 Button { insertMention(user) } label: {
                     HStack(spacing: 10) {
@@ -345,7 +386,9 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
             }
+          }
         }
+        .frame(height: CGFloat(min(mentionCandidates.count, 3)) * 48)
         .padding(.vertical, 6)
         .chatGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }

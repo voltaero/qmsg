@@ -31,6 +31,166 @@ private func runMailAction(_ id: String, on message: Message, key: ChannelKey, f
     _ = try await store.call(function, context: .message(channel: key.channel, id: message.id), arguments: arguments, provider: key.provider).get()
 }
 
+// MARK: - Mailboxes
+
+/// The Mail tab: each mail account's folders, like Mail's Mailboxes, with
+/// the chosen folder's messages beside or above them.
+struct MailView: View {
+    @Environment(QmsgStore.self) private var store
+    @Environment(AccountsModel.self) private var accounts
+    @Environment(AppRouter.self) private var router
+    @State private var selection: ChannelKey?
+    /// Inbox opens by itself once, as Mail does; going back stays back.
+    @State private var openedInbox = false
+    @State private var composing: ChannelKey?
+    @State private var expanded: Set<String> = []
+
+    private var mailProviders: [ProviderState] {
+        store.sortedProviders.filter { accounts.isMail($0) }
+    }
+
+    private struct MailAccount: Identifiable {
+        var provider: ProviderState
+        var org: OrganizationEntry
+        var id: String { provider.name + "\n" + org.id }
+        var inbox: ChannelKey? {
+            org.scope.mailboxes.first { MailboxRole($0) == .inbox }
+                .map { ChannelKey(provider: provider.name, channel: ChannelRef(organization: org.id, channel: $0.id)) }
+        }
+    }
+
+    private var mailAccounts: [MailAccount] {
+        mailProviders.flatMap { provider in
+            provider.sortedOrganizations
+                .filter { $0.scope.channels.values.contains(where: \.isMailbox) }
+                .map { MailAccount(provider: provider, org: $0) }
+        }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: $selection) {
+                ForEach(mailProviders) { provider in
+                    let orgs = mailAccounts.filter { $0.provider.name == provider.name }
+                    if orgs.isEmpty {
+                        Section(accounts.label(for: provider.name)) { accountStatus(provider) }
+                    }
+                    ForEach(orgs) { account in
+                        Section {
+                            folders(account)
+                        } header: {
+                            Text(accounts.label(for: provider.name))
+                        } footer: {
+                            if account.org.name != accounts.label(for: provider.name) && orgs.count == 1 {
+                                Text(account.org.name)
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                ConnectionBanner(link: store.link) { store.resume() }
+            }
+            .navigationTitle("Mailboxes")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { composeButton }
+            }
+        } detail: {
+            NavigationStack {
+                if let selection {
+                    MailboxView(key: selection)
+                } else {
+                    ContentUnavailableView("No Mailbox Selected", systemImage: "tray", description: Text("Choose a mailbox to see its mail."))
+                }
+            }
+            .id(selection)
+        }
+        .sheet(isPresented: Binding(get: { composing != nil }, set: { if !$0 { composing = nil } })) {
+            if let key = composing {
+                NavigationStack { MailComposeView(provider: key.provider, mode: .new(.channel(key.channel))) }
+            }
+        }
+        .task(id: mailAccounts.first?.inbox) {
+            guard !openedInbox, selection == nil, let inbox = mailAccounts.first?.inbox else { return }
+            openedInbox = true
+            selection = inbox
+        }
+    }
+
+    @ViewBuilder
+    private var composeButton: some View {
+        let senders = mailAccounts.compactMap { account in account.inbox.map { (account, $0) } }
+        if senders.count > 1 {
+            Menu("New Message", systemImage: "square.and.pencil") {
+                ForEach(senders, id: \.0.id) { account, inbox in
+                    Button(accounts.label(for: account.provider.name)) { composing = inbox }
+                }
+            }
+        } else {
+            Button("New Message", systemImage: "square.and.pencil") { composing = senders.first?.1 }
+                .disabled(senders.isEmpty)
+        }
+    }
+
+    /// Inbox and the special folders, then the rest folded under "More Folders".
+    @ViewBuilder
+    private func folders(_ account: MailAccount) -> some View {
+        let all = account.org.scope.mailboxes
+        let main = all.filter { MailboxRole($0) != .other }
+        let others = all.filter { MailboxRole($0) == .other }
+        ForEach(main) { folder in folderRow(account, folder) }
+        if !others.isEmpty {
+            DisclosureGroup("More Folders", isExpanded: Binding(get: { expanded.contains(account.id) }, set: { open in
+                if open { expanded.insert(account.id) } else { expanded.remove(account.id) }
+            })) {
+                ForEach(others) { folder in folderRow(account, folder) }
+            }
+        }
+    }
+
+    private func folderRow(_ account: MailAccount, _ folder: Channel) -> some View {
+        let key = ChannelKey(provider: account.provider.name, channel: ChannelRef(organization: account.org.id, channel: folder.id))
+        let role = MailboxRole(folder)
+        // Unread mail among what has been loaded; the server keeps no count.
+        let unread = role == .inbox ? store.conversation(key).messages.reduce(0) { $0 + ($1.email?.read == false ? 1 : 0) } : 0
+        return NavigationLink(value: key) {
+            Label {
+                HStack {
+                    Text(folder.mailboxName).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if unread > 0 { Text("\(unread)").foregroundStyle(.secondary).monospacedDigit() }
+                }
+            } icon: {
+                Image(systemName: role.symbol).foregroundStyle(.tint)
+            }
+        }
+    }
+
+    /// A mail account whose folders haven't arrived: why, and what to do.
+    @ViewBuilder
+    private func accountStatus(_ provider: ProviderState) -> some View {
+        let health = AccountHealth(status: provider.status, enabled: true)
+        if health.needsUser {
+            Button { router.show(account: provider.name) } label: {
+                HStack {
+                    Label(provider.status.loginStep != nil ? "Sign in to see your mail" : health.title, systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(health.color)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            HStack {
+                Text(health.tone == .good ? "No folders" : "\(health.title)…").foregroundStyle(.secondary)
+                Spacer()
+                if health.tone == .busy { ProgressView().controlSize(.small) }
+            }
+        }
+    }
+}
+
 // MARK: - Folder
 
 /// A mail folder as a list, newest first, like Mail's message list.
@@ -107,13 +267,19 @@ struct MailboxView: View {
         .refreshable { await store.loadLatest(key) }
         .searchable(text: $search, prompt: "Search loaded mail")
         .navigationTitle(channel?.mailboxName ?? key.channel.channel)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let identity = store.providers[key.provider]?.accountIdentity {
+                Text(identity).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 6).background(.bar)
+            }
+        }
+        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New message", systemImage: "square.and.pencil") { composing = true }
             }
         }
-        .toolbar(.hidden, for: .tabBar)
         .navigationDestination(item: $opened) { id in
             MailMessageView(key: key, id: id, functions: functions)
         }
@@ -122,7 +288,7 @@ struct MailboxView: View {
         }
         .task {
             store.visible = key
-            await store.loadIfNeeded(key)
+            await store.loadLatest(key)
         }
         .task(id: conversation.messages.first?.id) { await loadFunctions() }
         .onDisappear { if store.visible == key { store.visible = nil } }
@@ -214,6 +380,7 @@ struct MailMessageView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var markedRead = false
+    @State private var loadingBody = false
 
     private var message: Message? { store.conversation(key).message(id) }
     private var scope: Scope? { store.providers[key.provider]?.scope(key.channel.organization) }
@@ -230,12 +397,15 @@ struct MailMessageView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { if let message, let email = message.email { toolbar(message, email) } }
+        // The message's own actions take the bottom, as in Mail.
+        .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $replying) {
             if let message {
                 NavigationStack { MailComposeView(provider: key.provider, mode: .reply(message, key.channel)) }
             }
         }
         .task {
+            await loadBody()
             if loaded.isEmpty {
                 loaded = (try? await store.functions(.message(channel: key.channel, id: id), provider: key.provider)) ?? []
             }
@@ -256,7 +426,10 @@ struct MailMessageView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 header(message, email)
                 Divider()
-                if let html = email.html, !plainText {
+                if message.mailNeedsBody {
+                    if loadingBody { ProgressView("Loading message…").frame(maxWidth: .infinity).padding(.vertical, 24) }
+                    else { Button("Try loading again") { Task { await loadBody() } } }
+                } else if let html = email.html, !plainText {
                     MailHTMLView(message: message, html: html)
                 } else {
                     Text(MailQuote.styled(message.mailBody)).textSelection(.enabled)
@@ -337,38 +510,41 @@ struct MailMessageView: View {
         ToolbarItem(placement: .primaryAction) {
             Menu("More", systemImage: "ellipsis.circle") {
                 if has("mark_unread") && email.read {
-                    Button("Mark as unread", systemImage: "envelope.badge") { act("mark_unread", message, leave: true) }
+                    Button("Mark as Unread", systemImage: "envelope.badge") { act("mark_unread", message, leave: true) }
                 }
                 if email.html != nil && !message.mailBody.isEmpty {
-                    Toggle("Show plain text", systemImage: "text.alignleft", isOn: $plainText)
+                    Toggle("Show Plain Text", systemImage: "text.alignleft", isOn: $plainText)
                 }
-                let folders = (scope?.mailboxes ?? []).filter { $0.id != key.channel.channel }
-                if has("move") && !folders.isEmpty {
-                    Menu("Move to…", systemImage: "folder") {
-                        ForEach(folders) { folder in
-                            Button(folder.mailboxName, systemImage: MailboxRole(folder).symbol) {
-                                act("move", message, arguments: ["mailbox": .text(folder.id)], leave: true)
-                            }
-                        }
-                    }
-                }
-                Button("Copy subject", systemImage: "doc.on.doc") { UIPasteboard.general.string = email.subject }
+                Button("Copy Subject", systemImage: "doc.on.doc") { UIPasteboard.general.string = email.subject }
             }
             .disabled(busy)
         }
+        // Mail's order: destructive on the left, reply on the right.
         ToolbarItemGroup(placement: .bottomBar) {
             if has("trash") {
                 Button("Trash", systemImage: "trash") { act("trash", message, leave: true) }
                     .disabled(busy)
             }
             Spacer()
+            let folders = (scope?.mailboxes ?? []).filter { $0.id != key.channel.channel }
+            if has("move") && !folders.isEmpty {
+                Menu("Move", systemImage: "folder") {
+                    ForEach(folders) { folder in
+                        Button(folder.mailboxName, systemImage: MailboxRole(folder).symbol) {
+                            act("move", message, arguments: ["mailbox": .text(folder.id)], leave: true)
+                        }
+                    }
+                }
+                .disabled(busy)
+                Spacer()
+            }
             if has(email.starred ? "unstar" : "star") {
                 Button(email.starred ? "Unstar" : "Star", systemImage: email.starred ? "star.fill" : "star") {
                     act(email.starred ? "unstar" : "star", message)
                 }
                 .disabled(busy)
+                Spacer()
             }
-            Spacer()
             if has("reply") {
                 Button("Reply", systemImage: "arrowshape.turn.up.left") { replying = true }
                     .disabled(busy)
@@ -386,6 +562,15 @@ struct MailMessageView: View {
                 if leave { dismiss() }
             } catch { self.error = QmsgStore.describe(error) }
         }
+    }
+
+    private func loadBody() async {
+        guard message?.mailNeedsBody == true else { return }
+        loadingBody = true
+        error = nil
+        defer { loadingBody = false }
+        do { try await store.loadMailBody(key, id: id) }
+        catch { self.error = QmsgStore.describe(error) }
     }
 }
 

@@ -363,6 +363,12 @@ public final class QmsgStore {
         await loadLatest(key)
     }
 
+    public func loadMailBody(_ key: ChannelKey, id: String) async throws {
+        let result = try await execute(.getMessage(channel: key.channel, id: id), provider: key.provider)
+        guard case .message(let message) = try result.result.get() else { throw StoreError.unsupported("Couldn't load this email.") }
+        conversation(key).merge([message])
+    }
+
     /// Loads the newest page of a channel, reconciling it with what was loaded.
     /// A call while one is running loads again once that one is done, since
     /// its page may predate whatever prompted the call.

@@ -1,17 +1,26 @@
 import SwiftUI
+import UIKit
 import QmsgKit
 
-/// Which tab is showing, and where the Accounts tab is, so any screen can
-/// send the user to an account that needs them.
+/// Which tab is showing, and where Settings is, so any screen can send the
+/// user to an account that needs them.
 @MainActor @Observable
 final class AppRouter {
-    enum Tab: Hashable { case chats, accounts, settings }
+    enum Tab: Hashable { case chats, mail, settings }
     var tab: Tab = .chats
-    var accountPath: [String] = []
+    /// Account names pushed in Settings.
+    var settingsPath: [String] = []
+    var addingAccount = false
 
     func show(account name: String) {
-        accountPath = [name]
-        tab = .accounts
+        settingsPath = [name]
+        tab = .settings
+    }
+
+    func addAccount() {
+        settingsPath = []
+        tab = .settings
+        addingAccount = true
     }
 }
 
@@ -280,4 +289,58 @@ extension View {
             background(.regularMaterial, in: shape)
         }
     }
+}
+
+/// A server icon or avatar the network provides, over a fallback until it
+/// loads or when there is none.
+struct IconImage<Fallback: View, S: Shape>: View {
+    @Environment(QmsgStore.self) private var store
+    let media: Media?
+    let size: CGFloat
+    let shape: S
+    @ViewBuilder let fallback: () -> Fallback
+    @State private var image: UIImage?
+
+    /// Small, decoded icons, so lists don't decode them again as rows reappear.
+    private static var cache: NSCache<NSString, UIImage> { IconCache.shared }
+
+    private var cached: UIImage? {
+        guard let media, let key = MediaLoader.key(media) else { return nil }
+        return Self.cache.object(forKey: key as NSString)
+    }
+
+    var body: some View {
+        Group {
+            if let image = image ?? cached {
+                Image(uiImage: image).resizable().scaledToFill()
+                    .frame(width: size, height: size).clipShape(shape)
+            } else {
+                fallback()
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+        .task(id: media.flatMap(MediaLoader.key)) { await load() }
+    }
+
+    private func load() async {
+        image = nil
+        guard let media, media.mime.map({ $0.hasPrefix("image/") }) ?? true,
+              let key = MediaLoader.key(media) else { image = nil; return }
+        if let hit = Self.cache.object(forKey: key as NSString) { image = hit; return }
+        guard let data = try? await store.data(for: media), let full = UIImage(data: data) else { return }
+        let side = size * 3
+        let small = await full.byPreparingThumbnail(ofSize: CGSize(width: side, height: side)) ?? full
+        guard !Task.isCancelled else { return }
+        Self.cache.setObject(small, forKey: key as NSString)
+        image = small
+    }
+}
+
+private enum IconCache {
+    nonisolated(unsafe) static let shared: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 300
+        return cache
+    }()
 }

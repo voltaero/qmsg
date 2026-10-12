@@ -144,9 +144,12 @@ address syntax; it cannot prove that an address exists or will accept mail.
 - 8 MiB encoded outgoing mail and incoming raw/decoded mail; 20 outgoing
   attachments, 100 recipients and 100 incoming MIME parts (including containers),
   with at most 30 nesting levels and 64 KiB in the main header.
-- History caps pages at 20 messages and targets 4 MiB of content. One message
-  may exceed that page target up to the mail limit. The gRPC response cap still
-  applies to JSON after encoding; request fewer messages if it rejects a reply.
+- History returns up to 20 header-only messages in arrival-date order, with
+  `Custom("email-summary")` in their content. Use `GetMessage` when opening one
+  to fetch its body and attachments. Headers load in one IMAP request; bodies
+  over the mail limit no longer prevent the rest of a folder from loading.
+  Pagination uses date order, even when old mail has been restored to Inbox.
+  The most recently visited folder's ordering is cached until its UID set changes.
 - 100,000 messages per selected mailbox, 1,024 folders, 2,000 learned addresses.
 - 16 queued/running command workers with one mail operation at a time. Each
   operation opens its own connection, bounds network time and closes on cancel.

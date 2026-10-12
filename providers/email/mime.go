@@ -52,42 +52,8 @@ func parseMail(raw []byte, ref qmsg.ChannelRef, id string, flags []string) (qmsg
 		return qmsg.Message{}, fmt.Errorf("cannot read MIME mail: %w", err)
 	}
 	h := gomail.Header{Header: entity.Header}
-	e := &qmsg.Email{From: addresses(h, "From"), To: addresses(h, "To"), Cc: addresses(h, "Cc"), Bcc: addresses(h, "Bcc"), ReplyTo: addresses(h, "Reply-To"), ContentIDs: map[string]string{}}
-	e.Subject, _ = h.Subject()
-	e.Subject = validText(e.Subject)
-	mid, _ := h.MessageID()
-	if mid != "" {
-		mid = validText(mid)
-		e.MessageID = &mid
-	}
-	refs, _ := h.MsgIDList("References")
-	for i := range refs {
-		refs[i] = validText(refs[i])
-	}
-	e.References = refs
-	replies, _ := h.MsgIDList("In-Reply-To")
-	if len(replies) > 0 {
-		value := validText(replies[0])
-		e.InReplyTo = &value
-	}
-	for _, f := range flags {
-		switch strings.ToLower(f) {
-		case "\\seen":
-			e.Read = true
-		case "\\flagged":
-			e.Starred = true
-		case "\\draft":
-			e.Draft = true
-		}
-	}
-	m := qmsg.Message{ID: id, Channel: ref, Email: e}
-	if len(e.From) > 0 {
-		m.Author = e.From[0].Address
-	}
-	date, _ := h.Date()
-	if !date.IsZero() && date.UnixMilli() > 0 {
-		m.SentAt = uint64(date.UnixMilli())
-	}
+	m := mailHeader(h, ref, id, flags)
+	e := m.Email
 	total, parts := 0, 0
 	err = entity.Walk(func(path []int, part *message.Entity, walkErr error) error {
 		if walkErr != nil {
@@ -352,3 +318,43 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func validText(s string) string { return strings.ToValidUTF8(s, "�") }
+
+func mailHeader(h gomail.Header, ref qmsg.ChannelRef, id string, flags []string) qmsg.Message {
+	e := &qmsg.Email{From: addresses(h, "From"), To: addresses(h, "To"), Cc: addresses(h, "Cc"), Bcc: addresses(h, "Bcc"), ReplyTo: addresses(h, "Reply-To"), ContentIDs: map[string]string{}}
+	e.Subject, _ = h.Subject()
+	e.Subject = validText(e.Subject)
+	mid, _ := h.MessageID()
+	if mid != "" {
+		mid = validText(mid)
+		e.MessageID = &mid
+	}
+	refs, _ := h.MsgIDList("References")
+	for i := range refs {
+		refs[i] = validText(refs[i])
+	}
+	e.References = refs
+	replies, _ := h.MsgIDList("In-Reply-To")
+	if len(replies) > 0 {
+		value := validText(replies[0])
+		e.InReplyTo = &value
+	}
+	for _, f := range flags {
+		switch strings.ToLower(f) {
+		case "\\seen":
+			e.Read = true
+		case "\\flagged":
+			e.Starred = true
+		case "\\draft":
+			e.Draft = true
+		}
+	}
+	m := qmsg.Message{ID: id, Channel: ref, Email: e}
+	if len(e.From) > 0 {
+		m.Author = e.From[0].Address
+	}
+	date, _ := h.Date()
+	if !date.IsZero() && date.UnixMilli() > 0 {
+		m.SentAt = uint64(date.UnixMilli())
+	}
+	return m
+}

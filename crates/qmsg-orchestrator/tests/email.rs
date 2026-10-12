@@ -154,7 +154,10 @@ async fn email_component_logs_in_reads_sends_replies_and_sets_flags() {
         matches!(result,Value::Record(ref r) if r.get("accepted")==Some(&Value::Boolean(true)) && r.get("sent_copy_saved")==Some(&Value::Boolean(true)))
     );
     let page = p.history(inbox.clone(), None, 5).await.unwrap();
-    let m = &page.messages[0];
+    let m = p
+        .get_message(inbox.clone(), page.messages[0].id.clone())
+        .await
+        .unwrap();
     assert_eq!(m.email.as_ref().unwrap().subject, "WASM mail");
     let Content::File(media) = &m.content[1] else {
         panic!("missing attachment")

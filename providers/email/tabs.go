@@ -19,7 +19,7 @@ import (
 // Gmail's IMAP INBOX holds every inbox tab, while Gmail itself shows only
 // Primary there. With tabs on, INBOX is Primary and each other tab is a
 // virtual mailbox over INBOX. The tabs come from X-GM-RAW searches, which
-// go-imap cannot send, so they run on a short connection of their own.
+// go-imap cannot send, so they reuse a separate connection.
 var gmailTabs = []struct{ id, query string }{
 	{"INBOX/Promotions", "category:promotions"},
 	{"INBOX/Social", "category:social"},
@@ -40,8 +40,8 @@ type tabState struct {
 type inboxTabs struct {
 	state tabState
 	at    time.Time
-	// tab is each UID's tab; Primary mail has none.
-	tab map[imap.UID]string
+	// Gmail categories may overlap Primary when a tab is disabled.
+	tab map[string][]imap.UID
 }
 
 // tabsOn reports whether INBOX is split into tabs; only Gmail sets gmailTabs.
@@ -82,12 +82,13 @@ func (p *provider) inTab(ctx context.Context, s *imap.SelectData, modseq uint64,
 	if err != nil {
 		return nil, err
 	}
-	if tab == "INBOX" {
-		tab = ""
+	keep := make(map[imap.UID]bool, len(tabs[tab]))
+	for _, uid := range tabs[tab] {
+		keep[uid] = true
 	}
 	out := []imap.UID{}
 	for _, uid := range uids {
-		if tabs[uid] == tab {
+		if keep[uid] {
 			out = append(out, uid)
 		}
 	}
@@ -98,7 +99,7 @@ func (p *provider) inTab(ctx context.Context, s *imap.SelectData, modseq uint64,
 // unchanged. modseq is INBOX's HIGHESTMODSEQ from STATUS when SELECT has
 // none. Without either, a tab move changes nothing we can see, so the
 // listing then also expires after a minute.
-func (p *provider) tabs(ctx context.Context, s *imap.SelectData, modseq uint64) (map[imap.UID]string, error) {
+func (p *provider) tabs(ctx context.Context, s *imap.SelectData, modseq uint64) (map[string][]imap.UID, error) {
 	state := tabState{validity: s.UIDValidity, messages: s.NumMessages, next: s.UIDNext, modseq: s.HighestModSeq}
 	if state.modseq == 0 {
 		state.modseq = modseq
@@ -117,14 +118,8 @@ func (p *provider) tabs(ctx context.Context, s *imap.SelectData, modseq uint64) 
 	if validity != s.UIDValidity {
 		return nil, fmt.Errorf("inbox changed while loading tabs; try again")
 	}
-	tab := map[imap.UID]string{}
-	for _, t := range gmailTabs {
-		for _, uid := range found[t.id] {
-			tab[uid] = t.id
-		}
-	}
-	p.inboxTabs = &inboxTabs{state: state, at: time.Now(), tab: tab}
-	return tab, nil
+	p.inboxTabs = &inboxTabs{state: state, at: time.Now(), tab: found}
+	return found, nil
 }
 
 // tabSession is a connection kept for tab searches, since signing in to
@@ -258,7 +253,8 @@ func (s *tabSession) search() (uint32, map[string][]imap.UID, error) {
 		return 0, nil, err
 	}
 	found := map[string][]imap.UID{}
-	for _, t := range gmailTabs {
+	queries := append([]struct{ id, query string }{{"INBOX", "category:primary"}}, gmailTabs...)
+	for _, t := range queries {
 		err := s.run(`UID SEARCH X-GM-RAW "`+t.query+`"`, func(line string) error {
 			fields := strings.Fields(line)
 			if len(fields) == 0 || !strings.EqualFold(fields[0], "SEARCH") {

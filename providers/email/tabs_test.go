@@ -31,6 +31,16 @@ func gmailTabsProvider(t *testing.T) (*provider, *fakemail.Server, map[imap.UID]
 			return 0, nil, err
 		}
 		found := map[string][]imap.UID{}
+		all, err := c.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+		if err != nil {
+			return 0, nil, err
+		}
+		for _, uid := range all.AllUIDs() {
+			if !promo[uid] {
+				found["INBOX"] = append(found["INBOX"], uid)
+			}
+		}
+
 		for uid := range promo {
 			found["INBOX/Promotions"] = append(found["INBOX/Promotions"], uid)
 		}
@@ -180,7 +190,7 @@ func TestSearchTabsSpeaksGmailIMAP(t *testing.T) {
 		t.Fatalf("got %d %v", validity, found)
 	}
 	seen := <-commands
-	if len(seen) != 11 || seen[2] != `UID SEARCH X-GM-RAW "category:promotions"` || seen[6] != "EXAMINE INBOX" {
+	if len(seen) != 13 || seen[2] != `UID SEARCH X-GM-RAW "category:primary"` || seen[3] != `UID SEARCH X-GM-RAW "category:promotions"` || seen[7] != "EXAMINE INBOX" {
 		t.Fatalf("commands: %q", seen)
 	}
 }
@@ -200,5 +210,17 @@ func TestSearchTabsReportsRejectedTokens(t *testing.T) {
 	session := &tabSession{conn: client, r: bufio.NewReader(client), token: "expired"}
 	if err := session.login("alice@gmail.com"); !authenticationError(err) {
 		t.Fatalf("got %v, want a login request", err)
+	}
+}
+
+func TestPrimaryCanOverlapAnotherGmailCategory(t *testing.T) {
+	p, _, _ := gmailTabsProvider(t)
+	p.inboxTabs = nil
+	p.searchTabs = func(context.Context) (uint32, map[string][]imap.UID, error) {
+		return 7, map[string][]imap.UID{"INBOX": {2}, "INBOX/Updates": {2}, "INBOX/Promotions": {3}}, nil
+	}
+	got, err := p.inTab(context.Background(), &imap.SelectData{UIDValidity: 7}, 0, "INBOX", []imap.UID{1, 2, 3})
+	if err != nil || fmt.Sprint(got) != "[2]" {
+		t.Fatalf("Primary UIDs = %v, %v; want Spotify UID 2 only", got, err)
 	}
 }

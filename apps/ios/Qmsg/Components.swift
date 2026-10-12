@@ -188,7 +188,8 @@ struct ConnectionBanner: View {
             .font(.footnote)
             .padding(.horizontal, 14).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial)
+            // A material turns near black over the gray canvas in dark mode.
+            .background(Color(uiColor: .tertiarySystemBackground))
         }
     }
 }

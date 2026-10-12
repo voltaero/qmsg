@@ -85,7 +85,8 @@ struct ChatsView: View {
         if chatProviders.count > 1 { filterChips }
         let recent = recentItems
         if !recent.isEmpty {
-            Section("Recent") {
+            Section {
+                SectionTitle("Recent")
                 ForEach(recent, id: \.key) { item in
                     NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
                 }
@@ -93,7 +94,8 @@ struct ChatsView: View {
         }
         let servers = serverItems
         if !servers.isEmpty {
-            Section("Servers") {
+            Section {
+                SectionTitle("Servers")
                 ForEach(servers, id: \.route) { server in
                     NavigationLink(value: server.route) { ServerRow(server: server) }
                 }
@@ -102,7 +104,8 @@ struct ChatsView: View {
         let shown = Set(recent.map(\.key))
         let direct = directItems.filter { !shown.contains($0.key) }
         if !direct.isEmpty {
-            Section("Direct Messages") {
+            Section {
+                SectionTitle("Direct Messages")
                 ForEach(direct, id: \.key) { item in
                     NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
                 }
@@ -193,14 +196,16 @@ struct ChatsView: View {
     private var results: some View {
         let (chats, servers) = searchHits
         if !chats.isEmpty {
-            Section("Chats") {
+            Section {
+                SectionTitle("Chats")
                 ForEach(chats, id: \.key) { item in
                     NavigationLink(value: ChatRoute.chat(item.key)) { ChatRow(item: item) }
                 }
             }
         }
         if !servers.isEmpty {
-            Section("Servers") {
+            Section {
+                SectionTitle("Servers")
                 ForEach(servers, id: \.route) { server in
                     NavigationLink(value: server.route) { ServerRow(server: server) }
                 }
@@ -304,6 +309,22 @@ struct ChatsView: View {
 
     private func matches(_ text: String) -> Bool {
         search.isEmpty || text.localizedCaseInsensitiveContains(search)
+    }
+}
+
+/// A section's title as an ordinary row. Plain lists pin header views under
+/// the navigation bar while scrolling, which reads as a stray subtitle.
+private struct SectionTitle: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+            .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 4, trailing: 20))
+            .listRowSeparator(.hidden)
     }
 }
 

@@ -49,4 +49,5 @@ zbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"
 tempfile = "3"
 
 [build-dependencies]
+protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"

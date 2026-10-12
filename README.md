@@ -17,7 +17,7 @@ This Cargo workspace contains:
 
 ## Native app backend
 
-Building the host requires the protobuf compiler (`protoc`).
+The host build bundles the protobuf compiler; set `PROTOC` to use another one.
 
 The orchestrator serves a gRPC API for a native app over a LAN or secure tunnel.
 It has expiring QR pairing, revocable device tokens, resumable events, typed

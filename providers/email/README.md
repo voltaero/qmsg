@@ -146,7 +146,8 @@ address syntax; it cannot prove that an address exists or will accept mail.
   with at most 30 nesting levels and 64 KiB in the main header.
 - History returns up to 20 header-only messages in arrival-date order, with
   `Custom("email-summary")` in their content. Use `GetMessage` when opening one
-  to fetch its body and attachments. Headers load in one IMAP request; bodies
+  to fetch its body and attachments. Reply and move actions fetch headers only.
+  Headers load in one IMAP request; bodies
   over the mail limit no longer prevent the rest of a folder from loading.
   Pagination uses date order, even when old mail has been restored to Inbox.
   The most recently visited folder's ordering is cached until its UID set changes.

@@ -148,6 +148,16 @@ public enum Content: Codable, Hashable, Sendable {
 }
 
 public struct Media: Codable, Hashable, Sendable {
+    /// Avoid fetching large originals just to draw a chat row.
+    public var inlinePreview: Media? {
+        guard mime?.hasPrefix("image/") == true else { return nil }
+        if let raw = metadata.previewURL, let url = URL(string: raw), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            return Media(name: name, mime: mime, size: nil, source: .url(raw), metadata: metadata)
+        }
+        if case .bytes = source { return self }
+        guard let size, size <= 256 * 1024 else { return nil }
+        return self
+    }
     public var name: String?
     public var mime: String?
     public var size: UInt64?

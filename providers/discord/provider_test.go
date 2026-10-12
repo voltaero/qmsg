@@ -4,6 +4,7 @@ import (
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/ningen/v3"
 	qmsg "github.com/voltaero/qmsg/sdk/go"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,22 @@ func TestDMNameUsesTheDeduplicatedReadyProfile(t *testing.T) {
 	}
 	if original.DMRecipients[0].Username != "" {
 		t.Fatal("resolver mutated the shared channel cache")
+	}
+}
+
+func TestAttachmentPreviewDoesNotPointAtTheFullOriginal(t *testing.T) {
+	original := "https://cdn.discordapp.com/attachments/1/2/photo.png?ex=ffffffff&hm=signature"
+	c := attachment(discord.Attachment{Filename: "photo.png", ContentType: "image/png", URL: discord.URL(original), Proxy: "https://media.discordapp.net/attachments/1/2/photo.png?ex=ffffffff&hm=signature", Width: 2048, Height: 1536})
+	m := c.(qmsg.ContentImage).Media
+	u, e := url.Parse(*m.Metadata.PreviewURL)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if u.Query().Get("width") != "512" || u.Query().Get("height") != "512" {
+		t.Fatal("image preview has no size bound")
+	}
+	if u.Query().Get("hm") != "signature" || m.Source.(qmsg.SourceURL).URL != original {
+		t.Fatal("preview modified the original or its signature")
 	}
 }
 

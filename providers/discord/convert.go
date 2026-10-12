@@ -178,7 +178,16 @@ func attachment(a discord.Attachment) qmsg.Content {
 		m.Metadata.Height = qmsg.U32(uint32(a.Height))
 	}
 	if a.Proxy != "" {
-		m.Metadata.PreviewURL = qmsg.Str(string(a.Proxy))
+		preview := string(a.Proxy)
+		if u, err := url.Parse(preview); err == nil && strings.HasPrefix(a.ContentType, "image/") && u.Hostname() == "media.discordapp.net" {
+			query := u.Query()
+			query.Set("width", "512")
+			query.Set("height", "512")
+			query.Set("format", "webp")
+			u.RawQuery = query.Encode()
+			preview = u.String()
+		}
+		m.Metadata.PreviewURL = qmsg.Str(preview)
 	}
 	if a.Description != "" {
 		m.Metadata.Description = qmsg.Str(a.Description)

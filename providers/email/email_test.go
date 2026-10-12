@@ -87,6 +87,42 @@ func TestInboxPageUsesBulkMetadataRequests(t *testing.T) {
 	}
 }
 
+func TestMoveDoesNotDownloadTheOriginalMail(t *testing.T) {
+	p, s := testProvider(t)
+	if e := s.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); e != nil {
+		t.Fatal(e)
+	}
+	page, e := p.history(context.Background(), inbox(), nil, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = p.move(context.Background(), qmsg.InMessage{Channel: inbox(), ID: page.Messages[0].ID}, "Trash"); e != nil {
+		t.Fatal(e)
+	}
+	if s.FullBodyFetches.Load() != 0 {
+		t.Fatal("moving mail downloaded the original body")
+	}
+}
+
+func TestReplyOnlyFetchesOriginalHeaders(t *testing.T) {
+	p, s := testProvider(t)
+	raw := []byte("From: bob@example.test\r\nTo: alice@example.test\r\nSubject: Mail\r\nMessage-ID: <old@example.test>\r\n\r\n" + strings.Repeat("x", maxMail+1))
+	if e := s.Append("INBOX", raw); e != nil {
+		t.Fatal(e)
+	}
+	page, e := p.history(context.Background(), inbox(), nil, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = p.call(context.Background(), qmsg.FunctionCall{Function: "reply", Context: qmsg.InMessage{Channel: inbox(), ID: page.Messages[0].ID}, Arguments: qmsg.Arguments{"content": qmsg.ContentValue{qmsg.ContentText{Text: "Reply"}}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if s.FullBodyFetches.Load() != 0 {
+		t.Fatal("reply downloaded the original body")
+	}
+}
+
 type testMailLiteral struct{ *bytes.Reader }
 
 func (r testMailLiteral) Size() int64 { return int64(r.Len()) }

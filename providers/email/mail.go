@@ -463,6 +463,27 @@ func (p *provider) get(ctx context.Context, ref qmsg.ChannelRef, id string) (qms
 	}
 	return m, e
 }
+
+func (p *provider) getHeaders(ctx context.Context, ref qmsg.ChannelRef, id string) (qmsg.Message, error) {
+	var m qmsg.Message
+	err := p.withMailbox(ctx, ref, func(c *imapclient.Client, s *imap.SelectData) error {
+		uid, err := parseID(id, s.UIDValidity)
+		if err != nil {
+			return err
+		}
+		rows, err := fetchMailHeaders(c, ref, s.UIDValidity, []imap.UID{uid})
+		if err != nil {
+			return err
+		}
+		var found bool
+		m, found = rows[uid]
+		if !found {
+			return qmsg.ErrUnknownMessage{ID: id}
+		}
+		return nil
+	})
+	return m, err
+}
 func (p *provider) flags(ctx context.Context, fc qmsg.InMessage, flag imap.Flag, add bool) error {
 	return p.withMailbox(ctx, fc.Channel, func(c *imapclient.Client, s *imap.SelectData) error {
 		uid, e := parseID(fc.ID, s.UIDValidity)
@@ -509,8 +530,12 @@ func (p *provider) move(ctx context.Context, fc qmsg.InMessage, target string) e
 		if !c.Caps().Has(imap.CapMove) {
 			return qmsg.ErrUnsupported{}
 		}
-		if _, e = fetchMail(c, fc.Channel, s.UIDValidity, uid); e != nil {
+		rows, e := fetchMailHeaders(c, fc.Channel, s.UIDValidity, []imap.UID{uid})
+		if e != nil {
 			return e
+		}
+		if _, found := rows[uid]; !found {
+			return qmsg.ErrUnknownMessage{ID: fc.ID}
 		}
 		_, e = c.Move(imap.UIDSetNum(uid), target).Wait()
 		if e == nil && p.cx != nil {

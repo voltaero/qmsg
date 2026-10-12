@@ -345,7 +345,9 @@ public final class QmsgStore {
 
     static func isRetryable(_ error: any Error) -> Bool {
         switch error.rpcCode {
-        case .unavailable, .resourceExhausted, .failedPrecondition: true
+        case .unavailable, .resourceExhausted: true
+        case .failedPrecondition:
+            (error as? RPCError)?.message == "provider instance changed; refresh snapshot"
         default: false
         }
     }

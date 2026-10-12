@@ -1,8 +1,22 @@
 import Foundation
 import Testing
+import GRPCCore
 @testable import QmsgKit
 
 @Suite struct ModelTests {
+    @Test func inlineImagesUsePreviewsAndLeaveLargeOriginalsForOpening() {
+        var metadata = MediaMetadata()
+        metadata.previewURL = "https://media.example/preview.jpg"
+        let large = Media(name: "photo.jpg", mime: "image/jpeg", size: 5_000_000, source: .url("https://media.example/original.jpg"), metadata: metadata)
+        #expect(large.inlinePreview?.source == .url("https://media.example/preview.jpg"))
+        #expect(Media(name: "photo.jpg", mime: "image/jpeg", size: 5_000_000, source: .blob("original")).inlinePreview == nil)
+        #expect(Media(name: "photo.jpg", mime: "image/jpeg", size: nil, source: .blob("original")).inlinePreview == nil)
+        #expect(Media(name: "small.jpg", mime: "image/jpeg", size: 32_000, source: .blob("small")).inlinePreview != nil)
+    }
+    @MainActor @Test func actionErrorsDoNotTriggerSnapshotRetries() {
+        #expect(!QmsgStore.isRetryable(RPCError(code: .failedPrecondition, message: "unknown message")))
+        #expect(QmsgStore.isRetryable(RPCError(code: .failedPrecondition, message: "provider instance changed; refresh snapshot")))
+    }
     @Test func directChatTitleFollowsItsRecipientsProfile() {
         var dm = channel("3100")
         dm.kind = .direct

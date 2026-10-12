@@ -86,6 +86,8 @@ The app has Chats and Settings, plus Mail when a mail account is set up:
 
 - **Chats** lists recent chats, servers and direct messages across accounts.
   Opening a server shows its channels grouped by category.
+  Images use provider previews; large originals without previews download only
+  when opened. Small images can load inline.
   Chips at the top filter by account. Accounts that need you, such as one
   waiting for sign-in, show as a banner that opens that account.
 - **Mail** lists folders by account, Inbox and special folders first.

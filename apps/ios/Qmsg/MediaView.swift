@@ -9,6 +9,7 @@ struct MediaView: View {
     @Environment(QmsgStore.self) private var store
     let media: Media
     @State private var data: Data?
+    @State private var thumbnail: Data?
     @State private var loading = false
     @State private var error: String?
     @State private var file: URL?
@@ -16,8 +17,7 @@ struct MediaView: View {
     @State private var revealed = false
 
     private var isImage: Bool { media.mime?.hasPrefix("image/") == true }
-    /// Small images show inline without a tap.
-    private var showsInline: Bool { isImage && (!media.metadata.spoiler || revealed) && (media.size ?? 0) <= 8_000_000 }
+    private var showsInline: Bool { isImage && (!media.metadata.spoiler || revealed) && media.inlinePreview != nil }
 
     /// Decoded images, so a row that is rebuilt while scrolling shows its
     /// image at once instead of a placeholder of another size.
@@ -26,9 +26,10 @@ struct MediaView: View {
     /// The image, if its bytes are already here.
     private var image: UIImage? {
         guard isImage else { return nil }
-        let key = MediaLoader.key(media).map { $0 as NSString }
+        let preview = media.inlinePreview ?? media
+        let key = MediaLoader.key(preview).map { $0 as NSString }
         if let key, let hit = Self.images.object(forKey: key) { return hit }
-        guard let bytes = data ?? store.media.cached(media), let image = UIImage(data: bytes) else { return nil }
+        guard let bytes = thumbnail ?? data ?? store.media.cached(preview) ?? store.media.cached(media), let image = UIImage(data: bytes) else { return nil }
         if let key { Self.images.setObject(image, forKey: key) }
         return image
     }
@@ -66,7 +67,7 @@ struct MediaView: View {
         }
         .quickLookPreview($preview)
         .task(id: revealed) {
-            if showsInline, image == nil { await fetch() }
+            if showsInline, image == nil { await fetchPreview() }
         }
         .onDisappear {
             if let file { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
@@ -107,6 +108,14 @@ struct MediaView: View {
     private func open() async {
         if file == nil { await fetch() }
         preview = file
+    }
+
+    private func fetchPreview() async {
+        guard let preview = media.inlinePreview else { return }
+        loading = true
+        defer { loading = false }
+        do { thumbnail = try await store.data(for: preview) }
+        catch { self.error = QmsgStore.describe(error) }
     }
 
     private func fetch() async {

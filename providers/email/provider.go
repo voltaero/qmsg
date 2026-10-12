@@ -423,7 +423,7 @@ func (p *provider) call(ctx context.Context, call qmsg.FunctionCall) (qmsg.Reply
 		c.content = []qmsg.Content(cv)
 		if call.Function == "reply" {
 			fc := call.Context.(qmsg.InMessage)
-			m, e := p.get(ctx, fc.Channel, fc.ID)
+			m, e := p.getHeaders(ctx, fc.Channel, fc.ID)
 			if e != nil {
 				return nil, e
 			}

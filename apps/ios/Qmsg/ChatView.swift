@@ -163,7 +163,7 @@ struct ChatView: View {
         }
         .navigationTitle(channel.flatMap { scope?.title(of: $0) } ?? key.channel.channel)
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+        .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Members", systemImage: "person.2") { showingMembers = true }
@@ -693,7 +693,7 @@ private struct MessageRow: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .foregroundStyle(mine ? Color.white : Color.primary)
         .tint(mine ? Color.white : Color.accentColor)
-        .background(mine ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(mine ? Color.accentColor : Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .fixedSize(horizontal: false, vertical: true)
     }
 }

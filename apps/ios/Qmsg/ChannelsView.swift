@@ -29,9 +29,14 @@ struct ChatsView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                if search.isEmpty { browse } else { results }
+                Group {
+                    if search.isEmpty { browse } else { results }
+                }
+                .listRowBackground(Color(uiColor: .secondarySystemBackground))
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
             .safeAreaInset(edge: .top, spacing: 0) {
                 ConnectionBanner(link: store.link) { store.resume() }
             }

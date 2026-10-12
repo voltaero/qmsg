@@ -150,7 +150,8 @@ address syntax; it cannot prove that an address exists or will accept mail.
   Headers load in one IMAP request; bodies
   over the mail limit no longer prevent the rest of a folder from loading.
   Pagination uses date order, even when old mail has been restored to Inbox.
-  The most recently visited folder's ordering is cached until its UID set changes.
+  The most recently visited folder's arrival dates are cached. New mail fetches
+  only unknown dates; moves remove old UIDs without rescanning known dates.
 - 100,000 messages per selected mailbox, 1,024 folders, 2,000 learned addresses.
 - 16 queued/running command workers with one mail operation at a time. Each
   operation opens its own connection, bounds network time and closes on cancel.

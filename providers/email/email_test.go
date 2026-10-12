@@ -121,6 +121,53 @@ func TestInboxLoadsTheRequestedFiftyHeaders(t *testing.T) {
 	}
 }
 
+func TestNewInboxMailDoesNotRescanKnownArrivalDates(t *testing.T) {
+	p, server := testProvider(t)
+	for i := 0; i < 100; i++ {
+		if err := server.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := p.history(context.Background(), inbox(), nil, 50); err != nil {
+		t.Fatal(err)
+	}
+	if server.DateUIDFetches.Load() != 100 {
+		t.Fatal("first page must discover arrival dates")
+	}
+	if err := server.Append("INBOX", []byte("From: bob@example.test\r\nSubject: New mail\r\n\r\nBody")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := p.history(context.Background(), inbox(), nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Messages[0].Email.Subject != "New mail" {
+		t.Fatal("new mail did not reach the newest page")
+	}
+	if got := server.DateUIDFetches.Load(); got != 101 {
+		t.Fatalf("new arrival refetched known dates: %d UID dates fetched", got)
+	}
+	if _, err := p.history(context.Background(), inbox(), nil, 50); err != nil {
+		t.Fatal(err)
+	}
+	if server.DateUIDFetches.Load() != 101 {
+		t.Fatal("unchanged page refetched dates")
+	}
+	if err := p.move(context.Background(), qmsg.InMessage{Channel: inbox(), ID: page.Messages[0].ID}, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	afterMove, err := p.history(context.Background(), inbox(), nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterMove.Messages[0].Email.Subject == "New mail" {
+		t.Fatal("moved mail remained in Inbox")
+	}
+	if server.DateUIDFetches.Load() != 101 {
+		t.Fatal("removing mail refetched known dates")
+	}
+}
+
 func TestMoveDoesNotDownloadTheOriginalMail(t *testing.T) {
 	p, s := testProvider(t)
 	if e := s.Append("INBOX", []byte("From: bob@example.test\r\nSubject: Mail\r\n\r\nBody")); e != nil {

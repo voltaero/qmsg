@@ -410,31 +410,47 @@ type mailOrder struct {
 	folder       string
 	validity     uint32
 	ids, ordered []imap.UID
+	dates        map[imap.UID]time.Time
 }
 
 // A UID records insertion order, not arrival date: moving an old message
 // back into Inbox can give it a new UID. Cache one folder's date order so
-// reopening and paging don't rescan its metadata.
+// reopening and paging don't rescan its metadata. New arrivals fetch only
+// unknown dates; deleted UIDs drop out of the cache.
 func (p *provider) orderedMail(c *imapclient.Client, folder string, validity uint32, ids []imap.UID) ([]imap.UID, error) {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	if cache := p.mailOrder; cache != nil && cache.folder == folder && cache.validity == validity && reflect.DeepEqual(cache.ids, ids) {
 		return cache.ordered, nil
 	}
 	if len(ids) == 0 {
+		p.mailOrder = &mailOrder{folder: folder, validity: validity, ids: ids, ordered: ids}
 		return ids, nil
 	}
-	dates := map[imap.UID]time.Time{}
-	cmd := c.Fetch(imap.UIDSetNum(ids...), &imap.FetchOptions{UID: true, InternalDate: true})
-	defer cmd.Close()
-	for row := cmd.Next(); row != nil; row = cmd.Next() {
-		data, err := row.Collect()
-		if err != nil {
+	dates := make(map[imap.UID]time.Time, len(ids))
+	missing := []imap.UID{}
+	cache := p.mailOrder
+	for _, uid := range ids {
+		if cache != nil && cache.folder == folder && cache.validity == validity {
+			if date, known := cache.dates[uid]; known {
+				dates[uid] = date
+				continue
+			}
+		}
+		missing = append(missing, uid)
+	}
+	if len(missing) > 0 {
+		cmd := c.Fetch(imap.UIDSetNum(missing...), &imap.FetchOptions{UID: true, InternalDate: true})
+		defer cmd.Close()
+		for row := cmd.Next(); row != nil; row = cmd.Next() {
+			data, err := row.Collect()
+			if err != nil {
+				return nil, err
+			}
+			dates[data.UID] = data.InternalDate
+		}
+		if err := cmd.Close(); err != nil {
 			return nil, err
 		}
-		dates[data.UID] = data.InternalDate
-	}
-	if err := cmd.Close(); err != nil {
-		return nil, err
 	}
 	ordered := append([]imap.UID(nil), ids...)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -444,7 +460,7 @@ func (p *provider) orderedMail(c *imapclient.Client, folder string, validity uin
 		}
 		return a.Before(b)
 	})
-	p.mailOrder = &mailOrder{folder: folder, validity: validity, ids: ids, ordered: ordered}
+	p.mailOrder = &mailOrder{folder: folder, validity: validity, ids: ids, ordered: ordered, dates: dates}
 	return ordered, nil
 }
 func (p *provider) get(ctx context.Context, ref qmsg.ChannelRef, id string) (qmsg.Message, error) {

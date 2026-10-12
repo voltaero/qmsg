@@ -37,6 +37,7 @@ type Server struct {
 	Refreshes                       atomic.Int64
 	Fetches                         atomic.Int64
 	FullBodyFetches                 atomic.Int64
+	DateUIDFetches                  atomic.Int64
 	RejectRefresh                   atomic.Bool
 	IMAP, SMTP, StartTLS, OAuth, CA string
 	User                            *imapmemserver.User
@@ -181,6 +182,13 @@ type session struct {
 
 func (s *session) Fetch(w *imapserver.FetchWriter, set imap.NumSet, opts *imap.FetchOptions) error {
 	s.s.Fetches.Add(1)
+	if opts.InternalDate && len(opts.BodySection) == 0 {
+		if uids, ok := set.(imap.UIDSet); ok {
+			if nums, fixed := uids.Nums(); fixed {
+				s.s.DateUIDFetches.Add(int64(len(nums)))
+			}
+		}
+	}
 	for _, section := range opts.BodySection {
 		if section.Specifier == "" && len(section.Part) == 0 {
 			s.s.FullBodyFetches.Add(1)

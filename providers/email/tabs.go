@@ -115,7 +115,7 @@ func (p *provider) tabs(ctx context.Context, s *imap.SelectData, modseq uint64) 
 		return nil, err
 	}
 	if validity != s.UIDValidity {
-		return nil, fmt.Errorf("Inbox changed while loading tabs; try again")
+		return nil, fmt.Errorf("inbox changed while loading tabs; try again")
 	}
 	tab := map[imap.UID]string{}
 	for _, t := range gmailTabs {

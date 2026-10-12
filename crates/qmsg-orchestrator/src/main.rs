@@ -76,11 +76,30 @@ async fn main() -> anyhow::Result<()> {
     let stopper = service.stopper();
     let result = tokio::select! {
         result = service.serve(config.app) => result,
-        _ = tokio::signal::ctrl_c() => {
+        _ = stop_signal() => {
             tracing::info!("shutting down");
             Ok(())
         }
     };
     stopper.stop().await;
     result
+}
+
+/// Ctrl-C, or SIGTERM from a service manager.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            },
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }

@@ -39,6 +39,34 @@ enum Command {
     },
 }
 
+fn send_command(channel: ChannelRef, text: String) -> Command {
+    Command::Send {
+        channel,
+        reply_to: None,
+        content: vec![Content::Text(text)],
+        nonce: None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationError {
+    message: String,
+    delivery_unknown: bool,
+}
+impl std::fmt::Display for OperationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)?;
+        if self.delivery_unknown {
+            write!(
+                f,
+                "; delivery is unknown. Check history before sending again."
+            )?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for OperationError {}
+
 #[derive(Serialize, Deserialize)]
 pub struct Credentials {
     pub endpoint: String,
@@ -226,7 +254,9 @@ impl Client {
         }
         match self.rpc.execute(request).await?.into_inner().result {
             Some(wire::outcome::Result::Reply(data)) => Ok(serde_json::from_str(&data.json)?),
-            Some(wire::outcome::Result::ErrorJson(error)) => bail!("{error}"),
+            Some(wire::outcome::Result::ErrorJson(error)) => {
+                Err(serde_json::from_str::<OperationError>(&error)?.into())
+            }
             None => bail!("Server returned no result"),
         }
     }
@@ -299,12 +329,14 @@ pub async fn run(
                         let _ = updates.send(Update::History(target, page, true));
                     }
                     Some(Request::Send(target, text)) => {
-                        let command = Command::Send { channel: target.channel.clone(), reply_to: None,
-                            content: vec![Content::Text(text)], nonce: Some(uuid::Uuid::new_v4().to_string()) };
+                        let command = send_command(target.channel.clone(), text);
                         match client.execute(&target.provider, command, true).await {
                             Ok(Reply::Sent { .. }) => { let _ = updates.send(Update::Sent(target)); }
                             Ok(_) => { let _ = updates.send(Update::SendFailed(target, "Unexpected send reply; delivery is unknown. Check history before trying again.".into())); }
-                            Err(error) => { let _ = updates.send(Update::SendFailed(target, format!("{error}. Check history before trying again; delivery may be unknown."))); }
+                            Err(error) => {
+                                let message = if error.is::<OperationError>() { error.to_string() } else { format!("Delivery is unknown. Check history before sending again. {error}") };
+                                let _ = updates.send(Update::SendFailed(target, message));
+                            }
                         }
                     }
                     Some(Request::Login(provider, function)) => {
@@ -363,6 +395,31 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn send_nonce_fits_discord_limit() {
+        let command = send_command(ChannelRef::new(None, "general"), "hello".into());
+        let Command::Send { nonce, .. } = command else {
+            unreachable!()
+        };
+        // The host supplies a 24-character nonce when the client omits it.
+        assert!(
+            nonce.as_ref().is_none_or(|nonce| nonce.len() <= 25),
+            "Discord refuses nonces longer than 25 characters"
+        );
+    }
+
+    #[test]
+    fn send_errors_show_message_and_only_warn_when_delivery_is_unknown() {
+        let known: OperationError = serde_json::from_str(r#"{"code":"invalid_input","message":"Message is too long","command":null,"delivery_unknown":false}"#).unwrap();
+        assert_eq!(known.to_string(), "Message is too long");
+        let unknown = OperationError {
+            message: "Timed out".into(),
+            delivery_unknown: true,
+        };
+        assert!(unknown.to_string().contains("delivery is unknown"));
+        assert!(!unknown.to_string().contains("delivery_unknown"));
+    }
+
     #[tokio::test]
     async fn refuses_remote_plaintext_before_connecting() {
         let credentials = Credentials {

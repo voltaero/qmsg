@@ -1,13 +1,18 @@
+use crate::media;
 use crate::model::ProviderId;
 use crate::model::{Snapshot, Target};
 use anyhow::{Context, Result, bail};
-use qmsg_types::{Arguments, ChannelRef, Content, Function, FunctionContext, HistoryPage, Reply};
+use qmsg_types::{
+    Arguments, ChannelRef, Content, Function, FunctionContext, HistoryPage, Media, MediaSource,
+    Reply,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 pub mod wire {
@@ -207,6 +212,15 @@ pub enum Request {
     Refresh,
     Login(ProviderId, String),
     SubmitLogin(ProviderId, Function, Arguments),
+    #[allow(dead_code)]
+    Media {
+        key: String,
+        media: Media,
+        kind: media::Kind,
+    },
+    /// Blob ids the UI no longer needs. Best-effort.
+    #[allow(dead_code)]
+    Release(Vec<String>),
 }
 #[derive(Clone)]
 pub struct Requests {
@@ -252,6 +266,8 @@ pub enum Update {
     Connected,
     LoginForm(ProviderId, Function),
     LoginDone,
+    #[allow(dead_code)]
+    Media(String, Result<media::Loaded, String>),
 }
 #[derive(Clone)]
 struct Client {
@@ -321,6 +337,64 @@ impl Client {
             _ => bail!("Unexpected history reply"),
         }
     }
+    /// Reads a whole blob, then releases it whatever happened.
+    async fn read_blob(&mut self, id: &str, limit: u64) -> Result<Vec<u8>, String> {
+        let result = self.read_blob_chunks(id, limit).await;
+        self.release_blob(id).await;
+        result
+    }
+    async fn read_blob_chunks(&mut self, id: &str, limit: u64) -> Result<Vec<u8>, String> {
+        const CHUNK: u32 = 256 * 1024;
+        let mut data = Vec::new();
+        loop {
+            let request = self
+                .request(wire::ReadBlobRequest {
+                    id: id.into(),
+                    offset: data.len() as u64,
+                    length: CHUNK,
+                })
+                .map_err(|_| "Could not read media")?;
+            let chunk = self
+                .rpc
+                .read_blob(request)
+                .await
+                .map_err(|status| format!("Could not read media: {}", status.message()))?
+                .into_inner()
+                .data;
+            if (data.len() + chunk.len()) as u64 > limit {
+                return Err(media::too_large(limit));
+            }
+            data.extend_from_slice(&chunk);
+            if chunk.len() < CHUNK as usize {
+                return Ok(data);
+            }
+        }
+    }
+    async fn release_blob(&mut self, id: &str) {
+        if let Ok(request) = self.request(wire::ReleaseBlobRequest { id: id.into() }) {
+            let _ = self.rpc.release_blob(request).await;
+        }
+    }
+    async fn load_media(
+        mut self,
+        http: Result<reqwest::Client, String>,
+        media: Media,
+        kind: media::Kind,
+    ) -> Result<media::Loaded, String> {
+        let bytes = match (media::check(&media, kind, now()), media.source) {
+            (Err(error), MediaSource::Blob(id)) => {
+                self.release_blob(&id).await;
+                return Err(error);
+            }
+            (Err(error), _) => return Err(error),
+            (Ok(()), MediaSource::Bytes(bytes)) => bytes,
+            (Ok(()), MediaSource::Url(url)) => media::fetch_url(&http?, &url, kind.limit()).await?,
+            (Ok(()), MediaSource::Blob(id)) => self.read_blob(&id, kind.limit()).await?,
+        };
+        tokio::task::spawn_blocking(move || media::load(&bytes, media.mime.as_deref(), kind))
+            .await
+            .map_err(|_| "Could not load media".to_string())?
+    }
 }
 pub async fn run(
     credentials: Credentials,
@@ -330,6 +404,9 @@ pub async fn run(
 ) {
     let mut selected = None;
     let mut login_task: Option<tokio::task::JoinHandle<()>> = None;
+    // Reads share the backend's per-device quota of four.
+    let media_reads = Arc::new(Semaphore::new(4));
+    let http = media::http_client();
     loop {
         let rpc = match connect(&credentials).await {
             Ok(rpc) => rpc,
@@ -412,6 +489,24 @@ pub async fn run(
                                 Err(error) => Update::Error(format!("Sign-in failed: {error}")),
                             });
                         }));
+                    }
+                    Some(Request::Media { key, media, kind }) => {
+                        let (client, updates, reads, http) = (client.clone(), updates.clone(), media_reads.clone(), http.clone());
+                        tokio::spawn(async move {
+                            let result = match reads.acquire_owned().await {
+                                Ok(_permit) => client.load_media(http, media, kind).await,
+                                Err(_) => Err("Could not load media".into()),
+                            };
+                            let _ = updates.send(Update::Media(key, result));
+                        });
+                    }
+                    Some(Request::Release(ids)) => {
+                        let mut client = client.clone();
+                        tokio::spawn(async move {
+                            for id in ids {
+                                client.release_blob(&id).await;
+                            }
+                        });
                     }
                     Some(Request::Refresh) | None => {
                         let snapshot = client.snapshot().await?;

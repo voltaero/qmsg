@@ -335,6 +335,7 @@ impl State {
                     }
                 }
             }
+            Update::Media(..) => {}
             Update::Sent(target) => {
                 if self.pending.as_ref().is_some_and(|(t, _)| *t == target) {
                     self.pending = None;

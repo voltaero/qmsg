@@ -1,12 +1,11 @@
 use crate::{
-    client::{Request, Update},
+    client::{Request, Requests, Update},
     model::{Provider, Room, Target, Timeline},
 };
 use fxcode::{Border, Color, Container, Node, Style, TerminalSize, Text};
-use qmsg_types::{Content, ProviderStatus};
-use std::collections::HashMap;
+use qmsg_types::{ChannelRef, Content, ProviderStatus};
+use std::{cell::Cell, collections::HashMap};
 use termion::event::Key;
-use tokio::sync::mpsc::Sender;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -16,6 +15,8 @@ const MUTED: Color = Color::from_rgba(137, 148, 172, 255);
 const ACCENT: Color = Color::from_rgba(128, 189, 255, 255);
 const EDGE: Color = Color::from_rgba(58, 66, 88, 255);
 const SELECT: Color = Color::from_rgba(43, 57, 79, 255);
+const DRAFT_LIMIT: usize = 64 * 1024;
+const FIELD_LIMIT: usize = 16 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -30,10 +31,14 @@ pub struct State {
     room: usize,
     focus: Focus,
     pub timeline: Timeline,
-    drafts: HashMap<String, String>,
-    pending: Option<Target>,
+    /// Keyed by account name and channel, so drafts survive provider restarts.
+    drafts: HashMap<(String, ChannelRef), String>,
+    /// The message being sent and where to, so a failure can restore it.
+    pending: Option<(Target, String)>,
     pub status: String,
     scroll: usize,
+    /// How far the last frame could scroll up, so scrolling stops at the top.
+    max_scroll: Cell<usize>,
     help: bool,
     pub demo: bool,
     loading_older: bool,
@@ -52,6 +57,7 @@ impl Default for State {
             pending: None,
             status: "Connecting to orchestrator…".into(),
             scroll: 0,
+            max_scroll: Cell::new(0),
             help: false,
             demo: false,
             loading_older: false,
@@ -61,49 +67,73 @@ impl Default for State {
     }
 }
 impl State {
-    fn rooms(&self) -> Vec<Room> {
+    fn rooms(&self) -> Vec<Room<'_>> {
         self.providers
             .get(self.account)
             .map(Provider::rooms)
             .unwrap_or_default()
     }
-    pub fn selected(&self) -> Option<Room> {
-        self.rooms().get(self.room).cloned()
+    pub fn selected(&self) -> Option<Room<'_>> {
+        self.rooms().into_iter().nth(self.room)
     }
-    fn draft_key(target: &Target) -> String {
-        format!(
-            "{}:{}:{:?}:{}",
-            target.provider.name,
-            target.provider.instance,
-            target.channel.organization,
-            target.channel.channel
-        )
+    fn target(&self) -> Option<Target> {
+        self.selected().map(|r| r.target)
     }
     fn draft(&self) -> &str {
-        self.selected()
-            .and_then(|r| self.drafts.get(&Self::draft_key(&r.target)))
+        self.target()
+            .and_then(|t| self.drafts.get(&t.stable()))
             .map(String::as_str)
             .unwrap_or("")
     }
-    fn select(&mut self, tx: &Sender<Request>) {
+    fn draft_mut(&mut self) -> Option<&mut String> {
+        let target = self.target()?;
+        Some(self.drafts.entry(target.stable()).or_default())
+    }
+    fn select(&mut self, tx: &Requests) {
         self.timeline = Timeline::default();
         self.scroll = 0;
+        self.max_scroll.set(0);
         self.loading_older = false;
-        if let Some(room) = self.selected()
-            && !self.demo
+        if !self.demo
+            && let Err(error) = tx.select(self.target())
         {
-            self.queue(tx, Request::Select(room.target));
+            self.status = error.into();
         }
     }
-    fn queue(&mut self, tx: &Sender<Request>, request: Request) -> bool {
-        if tx.try_send(request).is_err() {
-            self.status = "Busy or disconnected. Try again shortly.".into();
-            false
-        } else {
-            true
+    fn queue(&mut self, tx: &Requests, request: Request) -> bool {
+        match tx.try_send(request) {
+            Ok(()) => true,
+            Err(error) => {
+                self.status = error.into();
+                false
+            }
         }
     }
-    pub fn update(&mut self, update: Update, tx: &Sender<Request>) {
+    /// Inserts pasted text into the focused input without sending it.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if let Some(form) = &mut self.login {
+            if let Err(error) = form.paste(&text) {
+                self.status = error;
+            }
+            return;
+        }
+        self.help = false;
+        self.focus = Focus::Compose;
+        let Some(draft) = self.draft_mut() else {
+            return;
+        };
+        for c in text.chars() {
+            if draft.len() + c.len_utf8() > DRAFT_LIMIT {
+                self.status = "Message is too long; paste was cut short".into();
+                return;
+            }
+            if c == '\n' || c == '\t' || !c.is_control() {
+                draft.push(c);
+            }
+        }
+    }
+    pub fn update(&mut self, update: Update, tx: &Requests) {
         match update {
             Update::LoginForm(provider, function) => {
                 self.login = Some(LoginForm {
@@ -126,22 +156,32 @@ impl State {
                 self.loading_older = false;
             }
             Update::Snapshot(snapshot) => {
-                let old = self.selected().map(|r| r.target);
-                let account = self.providers.get(self.account).map(|p| p.provider.clone());
+                // Restarts change a provider's instance, so match by name and channel.
+                let old = self.target();
+                let account = self
+                    .providers
+                    .get(self.account)
+                    .map(|p| p.provider.name.clone());
                 self.providers = snapshot.providers;
-                self.account = account
-                    .and_then(|id| self.providers.iter().position(|p| p.provider == id))
-                    .unwrap_or(0);
+                let found = account
+                    .and_then(|name| self.providers.iter().position(|p| p.provider.name == name));
+                self.account = found.unwrap_or(0);
                 self.room = old
                     .as_ref()
-                    .and_then(|target| self.rooms().iter().position(|r| &r.target == target))
+                    .filter(|_| found.is_some())
+                    .and_then(|old| {
+                        self.rooms()
+                            .iter()
+                            .position(|r| r.target.channel == old.channel)
+                    })
                     .unwrap_or(0);
-                if self.selected().map(|r| r.target) != old {
+                // A new instance needs its own Select, and its history replaces the old.
+                if self.target() != old {
                     self.select(tx);
                 }
             }
             Update::History(target, page, older) => {
-                if self.selected().is_some_and(|r| r.target == target) {
+                if self.target() == Some(target) {
                     if older {
                         self.timeline.prepend(page);
                         self.loading_older = false;
@@ -151,18 +191,31 @@ impl State {
                 }
             }
             Update::Sent(target) => {
-                self.drafts.remove(&Self::draft_key(&target));
-                self.pending = None;
+                if self.pending.as_ref().is_some_and(|(t, _)| *t == target) {
+                    self.pending = None;
+                }
+                if self.target() == Some(target) {
+                    self.scroll = 0;
+                }
                 self.status.clear();
                 self.queue(tx, Request::Refresh);
             }
-            Update::SendFailed(_target, error) => {
-                self.pending = None;
+            Update::SendFailed(target, error) => {
+                if self.pending.as_ref().is_some_and(|(t, _)| *t == target) {
+                    let (target, text) = self.pending.take().unwrap();
+                    // Put the message back ahead of anything typed since.
+                    let draft = self.drafts.entry(target.stable()).or_default();
+                    *draft = if draft.is_empty() {
+                        text
+                    } else {
+                        format!("{text}\n{draft}")
+                    };
+                }
                 self.status = error;
             }
         }
     }
-    pub fn key(&mut self, key: Key, tx: &Sender<Request>) -> bool {
+    pub fn key(&mut self, key: Key, tx: &Requests) -> bool {
         if key == Key::Ctrl('c') || key == Key::Ctrl('q') {
             return false;
         }
@@ -234,7 +287,7 @@ impl State {
                 self.queue(tx, Request::Refresh);
             }
             Key::PageUp => {
-                self.scroll = self.scroll.saturating_add(10);
+                self.scroll = (self.scroll + 10).min(self.max_scroll.get());
                 self.older(tx);
             }
             Key::PageDown => self.scroll = self.scroll.saturating_sub(10),
@@ -271,7 +324,7 @@ impl State {
                 }
             }
             Key::Up if self.focus == Focus::Messages => {
-                self.scroll += 1;
+                self.scroll = (self.scroll + 1).min(self.max_scroll.get());
                 self.older(tx);
             }
             Key::Down if self.focus == Focus::Messages => {
@@ -280,29 +333,9 @@ impl State {
             Key::Char('\n') if self.focus == Focus::Accounts => self.focus = Focus::Channels,
             Key::Char('\n') if self.focus == Focus::Channels => self.focus = Focus::Compose,
             Key::Char('i') if self.focus != Focus::Compose => self.focus = Focus::Compose,
-            Key::Char('\n') if self.focus == Focus::Compose => {
-                if let Some(room) = self.selected() {
-                    let text = self.draft().to_string();
-                    if !text.trim().is_empty() && self.pending.is_none() {
-                        if self.demo {
-                            self.status = "Demo mode · messages are not sent".into();
-                        } else if let Err(error) =
-                            room.channel.check(&[Content::Text(text.clone())])
-                        {
-                            self.status = format!("Cannot send: {error:?}");
-                        } else if self.queue(tx, Request::Send(room.target.clone(), text)) {
-                            self.pending = Some(room.target);
-                            self.status = "Sending…".into();
-                        }
-                    }
-                }
-            }
-            key if self.focus == Focus::Compose && self.pending.is_none() => {
-                if let Some(room) = self.selected() {
-                    let draft = self
-                        .drafts
-                        .entry(Self::draft_key(&room.target))
-                        .or_default();
+            Key::Char('\n') if self.focus == Focus::Compose => self.send(tx),
+            key if self.focus == Focus::Compose => {
+                if let Some(draft) = self.draft_mut() {
                     match key {
                         Key::Backspace => {
                             if let Some((offset, _)) = draft.grapheme_indices(true).next_back() {
@@ -311,7 +344,9 @@ impl State {
                         }
                         Key::Ctrl('u') => draft.clear(),
                         Key::Alt('\n' | '\r') => draft.push('\n'),
-                        Key::Char(c) if !c.is_control() && draft.len() < 64 * 1024 => draft.push(c),
+                        Key::Char(c) if !c.is_control() && draft.len() < DRAFT_LIMIT => {
+                            draft.push(c)
+                        }
                         _ => {}
                     }
                 }
@@ -320,12 +355,43 @@ impl State {
         }
         true
     }
-    fn older(&mut self, tx: &Sender<Request>) {
+    fn send(&mut self, tx: &Requests) {
+        let Some(room) = self.selected() else {
+            return;
+        };
+        let text = self.draft();
+        if text.trim().is_empty() {
+            return;
+        }
+        let problem = if self.pending.is_some() {
+            Some("Still sending the last message…".into())
+        } else if self.demo {
+            Some("Demo mode · messages are not sent".into())
+        } else {
+            room.channel
+                .check(&[Content::Text(text.into())])
+                .err()
+                .map(|error| format!("Cannot send: {error:?}"))
+        };
+        if let Some(problem) = problem {
+            self.status = problem;
+            return;
+        }
+        let target = room.target;
+        let text = self.drafts.remove(&target.stable()).unwrap_or_default();
+        if self.queue(tx, Request::Send(target.clone(), text.clone())) {
+            self.pending = Some((target, text));
+            self.status = "Sending…".into();
+        } else {
+            self.drafts.insert(target.stable(), text);
+        }
+    }
+    fn older(&mut self, tx: &Requests) {
         if self.demo || self.loading_older {
             return;
         }
-        if let (Some(room), Some(cursor)) = (self.selected(), self.timeline.cursor.clone())
-            && self.queue(tx, Request::Older(room.target, cursor))
+        if let (Some(target), Some(cursor)) = (self.target(), self.timeline.cursor.clone())
+            && self.queue(tx, Request::Older(target, cursor))
         {
             self.loading_older = true;
         }
@@ -530,6 +596,7 @@ impl State {
             );
         }
         let rows = usize::from(h - 7);
+        self.max_scroll.set(lines.len().saturating_sub(rows));
         let end = lines
             .len()
             .saturating_sub(self.scroll.min(lines.len().saturating_sub(rows)));
@@ -760,11 +827,36 @@ impl LoginForm {
                 }
             }
             Key::Ctrl('u') => self.values[self.field].clear(),
-            Key::Char(c) if !c.is_control() && self.values[self.field].len() < 16 * 1024 => {
+            Key::Char(c) if !c.is_control() && self.values[self.field].len() < FIELD_LIMIT => {
                 self.values[self.field].push(c)
             }
             _ => {}
         }
+    }
+    fn paste(&mut self, text: &str) -> Result<(), String> {
+        let Some(field) = self.function.inputs.get(self.field) else {
+            return Ok(());
+        };
+        let multiline = matches!(field.hint, qmsg_types::InputHint::Multiline);
+        // A copied token often ends in a newline; any other line break is a mistake.
+        let text = if multiline {
+            text
+        } else {
+            text.trim_end_matches('\n')
+        };
+        if !multiline && text.contains('\n') {
+            return Err(format!("{} takes a single line", field.label));
+        }
+        let value = &mut self.values[self.field];
+        for c in text.chars() {
+            if value.len() + c.len_utf8() > FIELD_LIMIT {
+                break;
+            }
+            if c == '\n' || !c.is_control() {
+                value.push(c);
+            }
+        }
+        Ok(())
     }
     fn arguments(&self) -> Result<qmsg_types::Arguments, String> {
         use qmsg_types::{InputHint, Value, ValueType};
@@ -824,13 +916,17 @@ impl LoginForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{client::Update, demo_state};
+    use crate::{
+        client::{Update, requests},
+        demo_state,
+        model::Snapshot,
+    };
     use qmsg_types::{HistoryPage, Message};
 
     #[test]
     fn drafts_stay_with_their_channel() {
         let mut state = demo_state();
-        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let (tx, _rx, _selection) = requests(8);
         state.key(Key::Char('i'), &tx);
         state.key(Key::Char('é'), &tx);
         state.key(Key::Esc, &tx);
@@ -843,7 +939,7 @@ mod tests {
     #[test]
     fn stale_history_cannot_replace_another_channel() {
         let mut state = demo_state();
-        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let (tx, _rx, _selection) = requests(8);
         let old = state.selected().unwrap().target;
         state.key(Key::Down, &tx);
         let page = HistoryPage {
@@ -854,30 +950,212 @@ mod tests {
         assert!(state.timeline.messages.is_empty());
     }
 
-    #[test]
-    fn failed_send_preserves_draft_and_success_clears_only_its_channel() {
+    /// The demo state, but able to send text so requests reach the queue.
+    fn live() -> State {
         let mut state = demo_state();
-        let (tx, _) = tokio::sync::mpsc::channel(8);
+        state.demo = false;
+        for channel in state.providers[0].organizations[0]
+            .scope
+            .channels
+            .values_mut()
+        {
+            *channel = channel.clone().accepting([qmsg_types::ContentKind::Text]);
+        }
+        state
+    }
+
+    fn sent(rx: &mut tokio::sync::mpsc::Receiver<Request>) -> Vec<String> {
+        let mut sent = vec![];
+        while let Ok(request) = rx.try_recv() {
+            if let Request::Send(_, text) = request {
+                sent.push(text);
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn typing_while_sending_starts_a_new_draft_that_success_keeps() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(8);
         let target = state.selected().unwrap().target;
         state.key(Key::Char('i'), &tx);
-        state.key(Key::Char('x'), &tx);
-        state.update(Update::SendFailed(target.clone(), "offline".into()), &tx);
-        assert_eq!(state.draft(), "x");
+        state.key(Key::Char('a'), &tx);
+        state.key(Key::Char('\n'), &tx);
+        assert_eq!(sent(&mut rx), vec!["a"]);
+        assert_eq!(state.draft(), "");
+        state.key(Key::Char('b'), &tx);
+        state.key(Key::Char('\n'), &tx);
+        assert!(sent(&mut rx).is_empty(), "second send while one is pending");
+        state.update(Update::Sent(target), &tx);
+        assert!(state.pending.is_none());
+        assert_eq!(state.draft(), "b");
+    }
+
+    #[test]
+    fn failed_send_restores_text_ahead_of_newer_draft_in_its_channel() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(8);
+        let target = state.selected().unwrap().target;
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('a'), &tx);
+        state.key(Key::Char('\n'), &tx);
+        state.key(Key::Char('b'), &tx);
         state.key(Key::Esc, &tx);
         state.key(Key::Down, &tx);
         state.key(Key::Char('i'), &tx);
-        state.key(Key::Char('y'), &tx);
-        state.update(Update::Sent(target), &tx);
-        assert_eq!(state.draft(), "y");
+        state.key(Key::Char('z'), &tx);
+        state.update(Update::SendFailed(target, "offline".into()), &tx);
+        assert_eq!(state.status, "offline");
+        assert_eq!(state.draft(), "z");
         state.key(Key::Esc, &tx);
         state.key(Key::Up, &tx);
-        assert_eq!(state.draft(), "");
+        assert_eq!(state.draft(), "a\nb");
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn full_queue_keeps_the_draft() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(1);
+        tx.try_send(Request::Refresh).unwrap();
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('a'), &tx);
+        state.key(Key::Char('\n'), &tx);
+        assert!(state.pending.is_none());
+        assert_eq!(state.draft(), "a");
+    }
+
+    #[test]
+    fn paste_inserts_lines_without_sending_even_while_pending() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(8);
+        state.paste("one\r\ntwo\x1b");
+        assert_eq!(state.draft(), "one\ntwo");
+        assert!(sent(&mut rx).is_empty());
+        state.key(Key::Char('\n'), &tx);
+        assert_eq!(sent(&mut rx), vec!["one\ntwo"]);
+        state.paste("three\nfour");
+        assert_eq!(state.draft(), "three\nfour");
+        assert!(sent(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn login_paste_keeps_single_line_fields_single_line() {
+        use qmsg_types::*;
+        let mut state = demo_state();
+        let mut function = Function::action("login", "Sign in", ActionKind::Login);
+        function
+            .inputs
+            .push(FunctionInput::new("token", "Token", ValueType::Text));
+        let mut notes = FunctionInput::new("notes", "Notes", ValueType::Text);
+        notes.hint = InputHint::Multiline;
+        function.inputs.push(notes);
+        state.login = Some(LoginForm {
+            provider: state.providers[0].provider.clone(),
+            function,
+            values: vec![String::new(); 2],
+            field: 0,
+        });
+        state.paste("abc\n");
+        state.paste("d\ne");
+        assert_eq!(state.status, "Token takes a single line");
+        state.login.as_mut().unwrap().field = 1;
+        state.paste("d\r\ne");
+        assert_eq!(state.login.as_ref().unwrap().values, vec!["abc", "d\ne"]);
+        assert!(state.draft().is_empty());
+    }
+
+    #[test]
+    fn sent_returns_to_latest_only_in_its_channel() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(8);
+        let size = TerminalSize {
+            cols: 60,
+            rows: 16,
+            ..TerminalSize::default()
+        };
+        let mut other = state.selected().unwrap().target;
+        other.channel.channel = "random".into();
+        state.view(size);
+        state.focus = Focus::Messages;
+        state.key(Key::Up, &tx);
+        assert_eq!(state.scroll, 1);
+        state.update(Update::Sent(other), &tx);
+        assert_eq!(state.scroll, 1);
+        state.update(Update::Sent(state.selected().unwrap().target), &tx);
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_oldest_rendered_line() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(8);
+        state.view(TerminalSize {
+            cols: 60,
+            rows: 16,
+            ..TerminalSize::default()
+        });
+        let top = state.max_scroll.get();
+        assert!(top > 0);
+        state.focus = Focus::Messages;
+        for _ in 0..20 {
+            state.key(Key::PageUp, &tx);
+        }
+        assert_eq!(state.scroll, top);
+        state.key(Key::PageDown, &tx);
+        assert_eq!(state.scroll, top.saturating_sub(10));
+    }
+
+    #[test]
+    fn provider_restart_keeps_selection_and_draft() {
+        let mut state = live();
+        let (tx, _rx, mut selection) = requests(8);
+        state.key(Key::Down, &tx);
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('x'), &tx);
+        let old = state.selected().unwrap().target;
+        let mut providers = state.providers.clone();
+        providers[0].provider.instance = 2;
+        state.update(Update::Snapshot(Snapshot { providers }), &tx);
+        let new = state.selected().unwrap().target;
+        assert_eq!(new.channel, old.channel);
+        assert_eq!(new.provider.instance, 2);
+        assert_eq!(state.draft(), "x");
+        assert_eq!(selection.borrow_and_update().as_ref(), Some(&new));
+        // History from before the restart no longer applies.
+        let page = HistoryPage {
+            messages: vec![Message::new("old", old.channel.clone(), "u", 0, vec![])],
+            next_cursor: None,
+        };
+        state.update(Update::History(old, page, false), &tx);
+        assert!(state.timeline.messages.is_empty());
+    }
+
+    #[test]
+    fn authors_show_names_from_the_channel_scope() {
+        let mut state = demo_state();
+        state.providers[0].organizations[0].scope.users.insert(
+            "Ana".into(),
+            qmsg_types::User {
+                id: "Ana".into(),
+                name: "Ana Lima".into(),
+                username: None,
+                avatar: None,
+            },
+        );
+        let tree = state.view(TerminalSize {
+            cols: 100,
+            rows: 40,
+            ..TerminalSize::default()
+        });
+        assert!(format!("{tree:?}").contains("Ana Lima"));
     }
 
     #[test]
     fn refreshing_latest_history_keeps_loaded_older_messages() {
         let mut state = demo_state();
-        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let (tx, _rx, _selection) = requests(8);
         let target = state.selected().unwrap().target;
         let message = |id: &str, time| Message::new(id, target.channel.clone(), "me", time, vec![]);
         state.timeline.messages = vec![message("1", 1), message("2", 2), message("3", 3)];
@@ -910,7 +1188,7 @@ mod tests {
         assert_eq!(wrap("a界e\u{301}", 3), vec!["a界", "e\u{301}"]);
         assert_eq!(wrap("\x1bhello\r", 20), vec!["hello"]);
         let mut state = demo_state();
-        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let (tx, _rx, _selection) = requests(8);
         state.key(Key::Char('i'), &tx);
         state.key(Key::Char('e'), &tx);
         state.key(Key::Char('\u{301}'), &tx);
@@ -921,7 +1199,7 @@ mod tests {
     #[test]
     fn alt_enter_adds_a_line_without_sending() {
         let mut state = demo_state();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (tx, mut rx, _selection) = requests(8);
         state.key(Key::Char('i'), &tx);
         state.key(Key::Char('a'), &tx);
         state.key(Key::Alt('\r'), &tx);

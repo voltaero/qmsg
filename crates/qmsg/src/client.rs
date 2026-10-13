@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 pub mod wire {
@@ -199,6 +199,41 @@ pub enum Request {
     Login(ProviderId, String),
     SubmitLogin(ProviderId, Function, Arguments),
 }
+#[derive(Clone)]
+pub struct Requests {
+    actions: mpsc::Sender<Request>,
+    selection: watch::Sender<Option<Target>>,
+}
+pub fn requests(
+    capacity: usize,
+) -> (
+    Requests,
+    mpsc::Receiver<Request>,
+    watch::Receiver<Option<Target>>,
+) {
+    let (actions, receiver) = mpsc::channel(capacity);
+    let (selection, selected) = watch::channel(None);
+    (Requests { actions, selection }, receiver, selected)
+}
+impl Requests {
+    pub fn select(&self, target: Option<Target>) -> Result<(), &'static str> {
+        if self.selection.is_closed() {
+            return Err("Backend disconnected");
+        }
+        self.selection.send_replace(target);
+        Ok(())
+    }
+    pub fn try_send(&self, request: Request) -> Result<(), &'static str> {
+        if let Request::Select(target) = request {
+            self.select(Some(target))
+        } else {
+            self.actions
+                .try_send(request)
+                .map_err(|_| "Busy or disconnected")
+        }
+    }
+}
+
 pub enum Update {
     Snapshot(Snapshot),
     History(Target, HistoryPage, bool),
@@ -281,6 +316,7 @@ impl Client {
 pub async fn run(
     credentials: Credentials,
     mut requests: mpsc::Receiver<Request>,
+    mut selection: watch::Receiver<Option<Target>>,
     updates: std::sync::mpsc::Sender<Update>,
 ) {
     let mut selected = None;
@@ -314,6 +350,13 @@ pub async fn run(
         let mut recovering = false;
         loop {
             let request = tokio::select! {
+                biased;
+                changed = selection.changed() => {
+                    if changed.is_err() { return; }
+                    let target = selection.borrow_and_update().clone();
+                    if target.is_none() { selected = None; }
+                    target.map(Request::Select)
+                },
                 request = requests.recv() => { let Some(request) = request else { return; }; Some(request) },
                 _ = interval.tick() => None,
             };
@@ -368,22 +411,19 @@ pub async fn run(
                             let page = client.history(target, None).await?;
                             let _ = updates.send(Update::History(target.clone(), page, false));
                         }
+                        if recovering {
+                            recovering = false;
+                            let _ = updates.send(Update::Connected);
+                        }
                     }
                 }
                 Ok(())
             }.await;
-            match result {
-                Err(error) => {
-                    recovering = true;
-                    if updates.send(Update::Error(error.to_string())).is_err() {
-                        return;
-                    }
+            if let Err(error) = result {
+                recovering = true;
+                if updates.send(Update::Error(error.to_string())).is_err() {
+                    return;
                 }
-                Ok(()) if recovering => {
-                    recovering = false;
-                    let _ = updates.send(Update::Connected);
-                }
-                Ok(()) => {}
             }
             if requests.is_closed() {
                 return;
@@ -395,6 +435,33 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newest_selection_survives_a_full_action_queue() {
+        let (tx, mut actions, mut selected) = requests(1);
+        tx.try_send(Request::Refresh).unwrap();
+        for channel in ["first", "last"] {
+            tx.try_send(Request::Select(Target {
+                provider: ProviderId {
+                    name: "test".into(),
+                    instance: 1,
+                },
+                channel: ChannelRef::new(None, channel),
+            }))
+            .unwrap();
+        }
+        assert_eq!(
+            selected
+                .borrow_and_update()
+                .as_ref()
+                .unwrap()
+                .channel
+                .channel,
+            "last"
+        );
+        assert!(matches!(actions.try_recv(), Ok(Request::Refresh)));
+        assert!(actions.try_recv().is_err());
+    }
+
     #[test]
     fn send_nonce_fits_discord_limit() {
         let command = send_command(ChannelRef::new(None, "general"), "hello".into());

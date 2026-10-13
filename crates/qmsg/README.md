@@ -11,7 +11,9 @@ sidebar and message pane take inspiration from
 cargo run -p qmsg -- --demo
 ```
 
-The demo stays offline and never sends messages. The app needs a Unix terminal
+The demo stays offline and never sends messages. fxcode links libmpv; install
+`mpv` on Arch Linux or `libmpv-dev` on Debian/Ubuntu before building.
+The app needs a Unix terminal
 at least 60 columns wide and 16 rows high. It restores the screen and cursor
 when you quit.
 
@@ -57,9 +59,10 @@ in the pairing payload and checks the server host name. See the
 | F1 | Show keyboard help |
 | Ctrl+Q / Ctrl+C | Quit |
 
-Drafts stay with each channel for the current session. Sending locks the
-composer until the result arrives. A failed send keeps the draft; check history
-before sending it again because delivery may be unknown. The client never
+Drafts stay with each channel for the current session. Sending holds the
+submitted message until the result arrives; you can keep writing the next draft.
+A rejected send puts its text back before that new draft. If delivery is unknown,
+check history before sending it again. The client never
 retries a send on its own.
 
 Sign-in forms support text, hidden secrets, booleans, integers, and named

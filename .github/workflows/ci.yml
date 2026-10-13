@@ -43,4 +43,6 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: useblacksmith/rust-cache@v3
+      - name: Install terminal media library
+        run: sudo apt-get update && sudo apt-get install -y libmpv-dev
       - run: cargo test

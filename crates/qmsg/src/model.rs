@@ -36,15 +36,21 @@ pub struct Target {
     pub provider: ProviderId,
     pub channel: ChannelRef,
 }
-#[derive(Clone)]
-pub struct Room {
+impl Target {
+    /// Identifies the channel across provider restarts, which change `instance`.
+    pub fn stable(&self) -> (String, ChannelRef) {
+        (self.provider.name.clone(), self.channel.clone())
+    }
+}
+/// A channel borrowed from its provider, so listing rooms copies no users.
+pub struct Room<'a> {
     pub target: Target,
-    pub channel: Channel,
-    pub group: String,
-    pub users: BTreeMap<String, User>,
+    pub channel: &'a Channel,
+    pub group: &'a str,
+    pub users: &'a BTreeMap<String, User>,
 }
 impl Provider {
-    pub fn rooms(&self) -> Vec<Room> {
+    pub fn rooms(&self) -> Vec<Room<'_>> {
         let mut rooms = Vec::new();
         let scopes = self
             .standalone
@@ -70,9 +76,9 @@ impl Provider {
                             channel: channel.id.clone(),
                         },
                     },
-                    channel: channel.clone(),
-                    group: group.into(),
-                    users: scope.users.clone(),
+                    channel,
+                    group,
+                    users: &scope.users,
                 });
             }
         }

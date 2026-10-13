@@ -1,4 +1,5 @@
 mod client;
+mod input;
 mod model;
 mod ui;
 
@@ -10,7 +11,7 @@ use std::{
     sync::mpsc,
     time::Duration,
 };
-use termion::{cursor, input::TermRead, raw::IntoRawMode, screen::IntoAlternateScreen};
+use termion::{cursor, raw::IntoRawMode, screen::IntoAlternateScreen};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -40,13 +41,18 @@ fn main() -> Result<()> {
         println!("Paired. Device credentials saved to {}", path.display());
         return Ok(());
     }
-    let (requests, receiver) = tokio::sync::mpsc::channel(32);
+    let (requests, receiver, selection) = client::requests(32);
     let (updates, incoming) = mpsc::channel();
     let worker = if demo {
         None
     } else {
         let path = config.map(Ok).unwrap_or_else(client::config_path)?;
-        Some(runtime.spawn(client::run(client::load(&path)?, receiver, updates)))
+        Some(runtime.spawn(client::run(
+            client::load(&path)?,
+            receiver,
+            selection,
+            updates,
+        )))
     };
     let state = if demo {
         demo_state()
@@ -61,11 +67,26 @@ fn main() -> Result<()> {
 }
 fn terminal(
     mut state: ui::State,
-    requests: tokio::sync::mpsc::Sender<client::Request>,
+    requests: client::Requests,
     incoming: mpsc::Receiver<client::Update>,
 ) -> Result<()> {
-    let mut output = io::stdout().into_raw_mode()?.into_alternate_screen()?;
-    write!(output, "{}", cursor::Hide)?;
+    struct Output<W: Write>(W);
+    impl<W: Write> Write for Output<W> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+    }
+    impl<W: Write> Drop for Output<W> {
+        fn drop(&mut self) {
+            let _ = self.0.write_all(b"\x1b[?2004l");
+            let _ = self.0.flush();
+        }
+    }
+    let mut output = Output(io::stdout().into_raw_mode()?.into_alternate_screen()?);
+    write!(output, "\x1b[?2004h{}", cursor::Hide)?;
     output.flush()?;
     // Restores the cursor on errors and unwinding, before leaving the alternate screen.
     struct Terminal<W: Write>(Renderer<W>);
@@ -77,13 +98,7 @@ fn terminal(
     let mut size = TerminalSize::current()?;
     let mut terminal = Terminal(Renderer::with_kitty(output, size, KittyMode::Disabled));
     let (keys, input) = mpsc::channel();
-    std::thread::spawn(move || {
-        for key in io::stdin().keys() {
-            if keys.send(key).is_err() {
-                break;
-            }
-        }
-    });
+    std::thread::spawn(move || input::read(io::stdin(), keys));
     let mut dirty = true;
     loop {
         while let Ok(update) = incoming.try_recv() {
@@ -102,8 +117,13 @@ fn terminal(
         }
         match input.recv_timeout(Duration::from_millis(50)) {
             Ok(key) => {
-                if !state.key(key?, &requests) {
-                    break;
+                match key? {
+                    input::Input::Key(key) => {
+                        if !state.key(key, &requests) {
+                            break;
+                        }
+                    }
+                    input::Input::Paste(text) => state.paste(&text),
                 }
                 dirty = true;
             }

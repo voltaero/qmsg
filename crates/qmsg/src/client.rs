@@ -99,13 +99,13 @@ async fn connect(credentials: &Credentials) -> Result<AppClient<Channel>> {
     let mut endpoint = Endpoint::from_shared(credentials.endpoint.clone())?
         .connect_timeout(Duration::from_secs(10));
     if url.scheme() == "https" {
-        let mut tls = ClientTlsConfig::new().with_webpki_roots();
-        if let Some(pem) = &credentials.certificate_pem {
-            tls = tls.ca_certificate(Certificate::from_pem(pem));
-        }
+        let tls = match &credentials.certificate_pem {
+            Some(pem) => ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)),
+            None => ClientTlsConfig::new().with_webpki_roots(),
+        };
         endpoint = endpoint.tls_config(tls)?;
     }
-    Ok(AppClient::new(endpoint.connect().await?))
+    Ok(AppClient::new(endpoint.connect().await?).max_decoding_message_size(8 * 1024 * 1024))
 }
 pub async fn pair(file: &Path, path: &Path) -> Result<()> {
     use sha2::{Digest, Sha256};
@@ -280,6 +280,8 @@ pub async fn run(
         };
         let _ = updates.send(Update::Connected);
         let mut interval = tokio::time::interval(Duration::from_secs(3));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut recovering = false;
         loop {
             let request = tokio::select! {
                 request = requests.recv() => { let Some(request) = request else { return; }; Some(request) },
@@ -338,10 +340,18 @@ pub async fn run(
                 }
                 Ok(())
             }.await;
-            if let Err(error) = result
-                && updates.send(Update::Error(error.to_string())).is_err()
-            {
-                return;
+            match result {
+                Err(error) => {
+                    recovering = true;
+                    if updates.send(Update::Error(error.to_string())).is_err() {
+                        return;
+                    }
+                }
+                Ok(()) if recovering => {
+                    recovering = false;
+                    let _ = updates.send(Update::Connected);
+                }
+                Ok(()) => {}
             }
             if requests.is_closed() {
                 return;

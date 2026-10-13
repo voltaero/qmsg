@@ -312,7 +312,7 @@ impl State {
                             }
                         }
                         Key::Ctrl('u') => draft.clear(),
-                        Key::Alt('\n') => draft.push('\n'),
+                        Key::Alt('\n' | '\r') => draft.push('\n'),
                         Key::Char(c) if !c.is_control() && draft.len() < 64 * 1024 => draft.push(c),
                         _ => {}
                     }
@@ -898,6 +898,18 @@ mod tests {
         state.key(Key::Char('\u{301}'), &tx);
         state.key(Key::Backspace, &tx);
         assert!(state.draft().is_empty());
+    }
+
+    #[test]
+    fn alt_enter_adds_a_line_without_sending() {
+        let mut state = demo_state();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        state.key(Key::Char('i'), &tx);
+        state.key(Key::Char('a'), &tx);
+        state.key(Key::Alt('\r'), &tx);
+        state.key(Key::Char('b'), &tx);
+        assert_eq!(state.draft(), "a\nb");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

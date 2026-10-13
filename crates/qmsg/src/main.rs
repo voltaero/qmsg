@@ -139,6 +139,17 @@ fn demo_state() -> ui::State {
     let mut channel = Channel::new("general", "general", ChannelKind::Text);
     channel.position = Some(0);
     let mut scope = Scope::default();
+    for name in ["Ana", "Claudio"] {
+        scope.users.insert(
+            name.into(),
+            User {
+                id: name.into(),
+                name: name.into(),
+                username: None,
+                avatar: None,
+            },
+        );
+    }
     scope.channels.insert(channel.id.clone(), channel);
     scope.channels.insert(
         "design".into(),

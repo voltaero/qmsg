@@ -1,9 +1,9 @@
 use crate::{
     client::{Request, Requests, Update},
-    model::{Provider, Room, Target, Timeline},
+    model::{Group, Provider, Room, Target, Timeline},
 };
 use fxcode::{Border, Color, Container, Node, Style, TerminalSize, Text};
-use qmsg_types::{ChannelRef, Content, ProviderStatus};
+use qmsg_types::{ChannelKind, ChannelRef, Content, Message, ProviderStatus, User};
 use std::{cell::Cell, collections::HashMap};
 use termion::event::Key;
 use unicode_segmentation::UnicodeSegmentation;
@@ -17,18 +17,80 @@ const EDGE: Color = Color::from_rgba(58, 66, 88, 255);
 const SELECT: Color = Color::from_rgba(43, 57, 79, 255);
 const DRAFT_LIMIT: usize = 64 * 1024;
 const FIELD_LIMIT: usize = 16 * 1024;
+const QUERY_LIMIT: usize = 256;
+/// Messages from one author closer together than this share a header.
+const GROUP_MS: u64 = 7 * 60_000;
+const HELP: &[(&str, &str)] = &[
+    ("Tab / Shift+Tab", "Next / previous panel"),
+    ("h / l, H / L", "Previous / next panel"),
+    ("j / k", "Move in lists; scroll messages"),
+    ("↓ / ↑", "Move in lists; next / previous message"),
+    ("J / K", "Next / previous message"),
+    ("Enter", "Open the server, channel or account"),
+    ("gg / G", "Oldest loaded / newest messages"),
+    ("PgUp / PgDn", "Scroll a page; older history loads"),
+    ("i", "Write a message (insert mode)"),
+    ("Esc / ;q", "Leave insert mode; the draft stays"),
+    ("Enter / Alt+Enter", "Send / new line"),
+    ("Ctrl+K / +", "Quick switch channels"),
+    ("Ctrl+R / Ctrl+L", "Refresh / sign in"),
+    ("F1 / Ctrl+Q", "Toggle this help / quit"),
+];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
-    Accounts,
+    Servers,
     Channels,
     Messages,
+    Accounts,
+    Members,
+    /// Insert mode: keys edit the draft.
     Compose,
+}
+/// Highlighted rows in each list. Moving them never opens anything; Enter does.
+#[derive(Default, Clone, Copy)]
+struct Cursors {
+    account: usize,
+    server: usize,
+    room: usize,
+    member: usize,
+}
+/// The pane sizes the last frame used, so keyboard motions match the screen.
+#[derive(Default, Clone, Copy)]
+struct Frame {
+    width: usize,
+    rows: usize,
+    members: bool,
+    accounts: bool,
+}
+struct Switcher {
+    query: String,
+    cursor: usize,
+}
+struct Line {
+    text: String,
+    color: Color,
+    /// Text after `text` in another color, such as a header's time.
+    extra: Option<(String, Color)>,
+    /// The timeline message this line belongs to.
+    message: Option<usize>,
+}
+impl Line {
+    fn plain(text: String, color: Color, message: Option<usize>) -> Self {
+        Self {
+            text,
+            color,
+            extra: None,
+            message,
+        }
+    }
 }
 pub struct State {
     pub providers: Vec<Provider>,
     account: usize,
+    server: usize,
     room: usize,
+    cursor: Cursors,
     focus: Focus,
     pub timeline: Timeline,
     /// Keyed by account name and channel, so drafts survive provider restarts.
@@ -36,21 +98,30 @@ pub struct State {
     /// The message being sent and where to, so a failure can restore it.
     pending: Option<(Target, String)>,
     pub status: String,
+    /// Lines scrolled up from the newest message.
     scroll: usize,
     /// How far the last frame could scroll up, so scrolling stops at the top.
     max_scroll: Cell<usize>,
+    frame: Cell<Frame>,
+    /// The message J / K moved to, by id so older pages keep it.
+    focused: Option<String>,
+    /// The first `g` of `gg`.
+    pending_g: bool,
     help: bool,
     pub demo: bool,
     loading_older: bool,
     login: Option<LoginForm>,
     login_busy: bool,
+    switcher: Option<Switcher>,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             providers: vec![],
             account: 0,
+            server: 0,
             room: 0,
+            cursor: Cursors::default(),
             focus: Focus::Channels,
             timeline: Timeline::default(),
             drafts: HashMap::new(),
@@ -58,19 +129,29 @@ impl Default for State {
             status: "Connecting to orchestrator…".into(),
             scroll: 0,
             max_scroll: Cell::new(0),
+            frame: Cell::new(Frame::default()),
+            focused: None,
+            pending_g: false,
             help: false,
             demo: false,
             loading_older: false,
             login: None,
             login_busy: false,
+            switcher: None,
         }
     }
 }
 impl State {
+    fn groups(&self) -> Vec<Group<'_>> {
+        self.providers
+            .get(self.account)
+            .map(Provider::groups)
+            .unwrap_or_default()
+    }
     fn rooms(&self) -> Vec<Room<'_>> {
         self.providers
             .get(self.account)
-            .map(Provider::rooms)
+            .map(|p| p.rooms(self.server))
             .unwrap_or_default()
     }
     pub fn selected(&self) -> Option<Room<'_>> {
@@ -89,16 +170,55 @@ impl State {
         let target = self.target()?;
         Some(self.drafts.entry(target.stable()).or_default())
     }
+    /// Users listed beside the chat: the channel's members, or its server's.
+    fn members(&self) -> Vec<&User> {
+        let Some(room) = self.selected() else {
+            return vec![];
+        };
+        let mut users: Vec<&User> = match &room.channel.members {
+            Some(ids) => ids.iter().filter_map(|id| room.users.get(id)).collect(),
+            None => room.users.values().collect(),
+        };
+        users.sort_by_cached_key(|u| u.name.to_lowercase());
+        users
+    }
     fn select(&mut self, tx: &Requests) {
         self.timeline = Timeline::default();
         self.scroll = 0;
         self.max_scroll.set(0);
+        self.focused = None;
         self.loading_older = false;
+        self.sync_cursors();
         if !self.demo
             && let Err(error) = tx.select(self.target())
         {
             self.status = error.into();
         }
+    }
+    /// Lists without focus show their active row; focused lists keep their place.
+    fn sync_cursors(&mut self) {
+        if self.focus != Focus::Accounts {
+            self.cursor.account = self.account;
+        }
+        if self.focus != Focus::Servers {
+            self.cursor.server = self.server;
+        }
+        if self.focus != Focus::Channels {
+            self.cursor.room = self.room;
+        }
+        self.cursor.account = self
+            .cursor
+            .account
+            .min(self.providers.len().saturating_sub(1));
+        self.cursor.server = self
+            .cursor
+            .server
+            .min(self.groups().len().saturating_sub(1));
+        self.cursor.room = self.cursor.room.min(self.rooms().len().saturating_sub(1));
+        self.cursor.member = self
+            .cursor
+            .member
+            .min(self.members().len().saturating_sub(1));
     }
     fn queue(&mut self, tx: &Requests, request: Request) -> bool {
         match tx.try_send(request) {
@@ -118,8 +238,20 @@ impl State {
             }
             return;
         }
+        if let Some(switcher) = &mut self.switcher {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                if switcher.query.len() + c.len_utf8() > QUERY_LIMIT {
+                    break;
+                }
+                switcher.query.push(c);
+            }
+            switcher.cursor = 0;
+            return;
+        }
         self.help = false;
-        self.focus = Focus::Compose;
+        if self.target().is_some() {
+            self.focus = Focus::Compose;
+        }
         let Some(draft) = self.draft_mut() else {
             return;
         };
@@ -156,16 +288,28 @@ impl State {
                 self.loading_older = false;
             }
             Update::Snapshot(snapshot) => {
-                // Restarts change a provider's instance, so match by name and channel.
+                // Restarts change a provider's instance, so match by name and ids.
                 let old = self.target();
                 let account = self
                     .providers
                     .get(self.account)
                     .map(|p| p.provider.name.clone());
+                let organization = self
+                    .groups()
+                    .get(self.server)
+                    .map(|g| g.organization.map(str::to_owned));
                 self.providers = snapshot.providers;
                 let found = account
                     .and_then(|name| self.providers.iter().position(|p| p.provider.name == name));
                 self.account = found.unwrap_or(0);
+                self.server = organization
+                    .filter(|_| found.is_some())
+                    .and_then(|organization| {
+                        self.groups()
+                            .iter()
+                            .position(|g| g.organization == organization.as_deref())
+                    })
+                    .unwrap_or(0);
                 self.room = old
                     .as_ref()
                     .filter(|_| found.is_some())
@@ -175,6 +319,7 @@ impl State {
                             .position(|r| r.target.channel == old.channel)
                     })
                     .unwrap_or(0);
+                self.sync_cursors();
                 // A new instance needs its own Select, and its history replaces the old.
                 if self.target() != old {
                     self.select(tx);
@@ -196,6 +341,7 @@ impl State {
                 }
                 if self.target() == Some(target) {
                     self.scroll = 0;
+                    self.focused = None;
                 }
                 self.status.clear();
                 self.queue(tx, Request::Refresh);
@@ -214,6 +360,34 @@ impl State {
                 self.status = error;
             }
         }
+    }
+    /// Panels Tab and h / l visit, in screen order. Insert mode is entered with `i`.
+    fn ring(&self) -> Vec<Focus> {
+        let frame = self.frame.get();
+        let mut ring = vec![Focus::Servers, Focus::Channels, Focus::Messages];
+        if frame.accounts {
+            ring.push(Focus::Accounts);
+        }
+        if frame.members {
+            ring.push(Focus::Members);
+        }
+        ring
+    }
+    fn cycle(&mut self, forward: bool) {
+        let ring = self.ring();
+        let from = if self.focus == Focus::Compose {
+            Focus::Messages
+        } else {
+            self.focus
+        };
+        let index = ring.iter().position(|f| *f == from).unwrap_or(0);
+        let next = if forward {
+            (index + 1) % ring.len()
+        } else {
+            (index + ring.len() - 1) % ring.len()
+        };
+        self.focus = ring[next];
+        self.sync_cursors();
     }
     pub fn key(&mut self, key: Key, tx: &Requests) -> bool {
         if key == Key::Ctrl('c') || key == Key::Ctrl('q') {
@@ -250,110 +424,288 @@ impl State {
             self.help = false;
             return true;
         }
+        if self.switcher.is_some() {
+            self.switcher_key(key, tx);
+            return true;
+        }
+        let g = std::mem::take(&mut self.pending_g);
         match key {
-            Key::F(1) => self.help = true,
-            Key::Ctrl('l') if !self.demo && !self.login_busy => {
-                if let Some(provider) = self.providers.get(self.account) {
-                    if let ProviderStatus::LoginRequired(step) = &provider.status {
-                        if let Some(function) = &step.function {
-                            self.login_busy = self.queue(
-                                tx,
-                                Request::Login(provider.provider.clone(), function.clone()),
-                            );
-                        }
-                    } else {
-                        self.status = "This account does not need sign-in".into();
-                    }
-                }
+            Key::F(1) | Key::Ctrl('/' | '_' | '7') => self.help = true,
+            Key::Ctrl('k') => {
+                self.switcher = Some(Switcher {
+                    query: String::new(),
+                    cursor: 0,
+                })
             }
-            Key::Char('\t') => {
-                self.focus = match self.focus {
-                    Focus::Accounts => Focus::Channels,
-                    Focus::Channels => Focus::Messages,
-                    Focus::Messages => Focus::Compose,
-                    Focus::Compose => Focus::Accounts,
-                }
-            }
-            Key::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Accounts => Focus::Compose,
-                    Focus::Channels => Focus::Accounts,
-                    Focus::Messages => Focus::Channels,
-                    Focus::Compose => Focus::Messages,
-                }
-            }
-            Key::Esc => self.focus = Focus::Channels,
+            Key::Ctrl('l') if !self.demo && !self.login_busy => self.sign_in(tx),
             Key::Ctrl('r') if !self.demo => {
                 self.queue(tx, Request::Refresh);
             }
-            Key::PageUp => {
-                self.scroll = (self.scroll + 10).min(self.max_scroll.get());
-                self.older(tx);
-            }
-            Key::PageDown => self.scroll = self.scroll.saturating_sub(10),
-            Key::End if self.focus == Focus::Messages => {
-                self.scroll = 0;
-            }
-            Key::Up | Key::Down
-                if self.focus == Focus::Accounts || self.focus == Focus::Channels =>
-            {
-                let up = key == Key::Up;
-                let count = if self.focus == Focus::Accounts {
-                    self.providers.len()
-                } else {
-                    self.rooms().len()
-                };
-                if count > 0 {
-                    let index = if self.focus == Focus::Accounts {
-                        &mut self.account
-                    } else {
-                        &mut self.room
-                    };
-                    let next = if up {
-                        index.saturating_sub(1)
-                    } else {
-                        (*index + 1).min(count - 1)
-                    };
-                    if next != *index {
-                        *index = next;
-                        if self.focus == Focus::Accounts {
-                            self.room = 0;
-                        }
-                        self.select(tx);
-                    }
+            Key::PageUp => self.scroll_by(self.page() as isize, tx),
+            Key::PageDown => self.scroll_by(-(self.page() as isize), tx),
+            _ if self.focus == Focus::Compose => self.insert(key, tx),
+            Key::Char('\t') | Key::Char('l') | Key::Char('L') => self.cycle(true),
+            Key::BackTab | Key::Char('h') | Key::Char('H') => self.cycle(false),
+            Key::Char('i') => {
+                if self.target().is_some() {
+                    self.focus = Focus::Compose;
                 }
             }
-            Key::Up if self.focus == Focus::Messages => {
-                self.scroll = (self.scroll + 1).min(self.max_scroll.get());
-                self.older(tx);
+            Key::Char('+') => {
+                self.switcher = Some(Switcher {
+                    query: String::new(),
+                    cursor: 0,
+                })
             }
-            Key::Down if self.focus == Focus::Messages => {
-                self.scroll = self.scroll.saturating_sub(1)
-            }
-            Key::Char('\n') if self.focus == Focus::Accounts => self.focus = Focus::Channels,
-            Key::Char('\n') if self.focus == Focus::Channels => self.focus = Focus::Compose,
-            Key::Char('i') if self.focus != Focus::Compose => self.focus = Focus::Compose,
-            Key::Char('\n') if self.focus == Focus::Compose => self.send(tx),
-            key if self.focus == Focus::Compose => {
-                if let Some(draft) = self.draft_mut() {
-                    match key {
-                        Key::Backspace => {
-                            if let Some((offset, _)) = draft.grapheme_indices(true).next_back() {
-                                draft.truncate(offset);
-                            }
-                        }
-                        Key::Ctrl('u') => draft.clear(),
-                        Key::Alt('\n' | '\r') => draft.push('\n'),
-                        Key::Char(c) if !c.is_control() && draft.len() < DRAFT_LIMIT => {
-                            draft.push(c)
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            _ if self.focus == Focus::Messages => self.messages_key(key, g, tx),
+            Key::Char('j') | Key::Down => self.move_cursor(1),
+            Key::Char('k') | Key::Up => self.move_cursor(-1),
+            Key::Home => self.move_cursor(isize::MIN / 2),
+            Key::End => self.move_cursor(isize::MAX / 2),
+            Key::Char('\n') => self.activate(tx),
             _ => {}
         }
         true
+    }
+    fn sign_in(&mut self, tx: &Requests) {
+        let Some(provider) = self.providers.get(self.account) else {
+            return;
+        };
+        if let ProviderStatus::LoginRequired(step) = &provider.status {
+            if let Some(function) = &step.function {
+                let request = Request::Login(provider.provider.clone(), function.clone());
+                self.login_busy = self.queue(tx, request);
+            }
+        } else {
+            self.status = "This account does not need sign-in".into();
+        }
+    }
+    fn insert(&mut self, key: Key, tx: &Requests) {
+        match key {
+            Key::Esc => self.focus = Focus::Messages,
+            Key::Char('\t') => {
+                self.focus = Focus::Messages;
+                self.cycle(true);
+            }
+            Key::BackTab => {
+                self.focus = Focus::Messages;
+                self.cycle(false);
+            }
+            Key::Char('\n') => self.send(tx),
+            key => {
+                let Some(draft) = self.draft_mut() else {
+                    return;
+                };
+                match key {
+                    Key::Backspace => {
+                        if let Some((offset, _)) = draft.grapheme_indices(true).next_back() {
+                            draft.truncate(offset);
+                        }
+                    }
+                    Key::Ctrl('u') => draft.clear(),
+                    Key::Alt('\n' | '\r') => draft.push('\n'),
+                    Key::Char(c) if !c.is_control() && draft.len() < DRAFT_LIMIT => {
+                        draft.push(c);
+                        // Vim users can leave insert mode by typing ;q.
+                        if draft.ends_with(";q") {
+                            draft.truncate(draft.len() - 2);
+                            self.focus = Focus::Messages;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    fn messages_key(&mut self, key: Key, g: bool, tx: &Requests) {
+        match key {
+            Key::Char('j') => self.scroll_by(-1, tx),
+            Key::Char('k') => self.scroll_by(1, tx),
+            Key::Char('J') | Key::Down => self.move_focus(1, tx),
+            Key::Char('K') | Key::Up => self.move_focus(-1, tx),
+            Key::Char('g') if g => {
+                self.focused = None;
+                self.scroll = self.max_scroll.get();
+                self.older(tx);
+            }
+            Key::Char('g') => self.pending_g = true,
+            Key::Char('G') | Key::End | Key::Esc => {
+                self.focused = None;
+                self.scroll = 0;
+            }
+            Key::Home => {
+                self.scroll = self.max_scroll.get();
+                self.older(tx);
+            }
+            _ => {}
+        }
+    }
+    /// Moves the highlighted row of the focused list.
+    fn move_cursor(&mut self, delta: isize) {
+        let (count, index) = match self.focus {
+            Focus::Accounts => (self.providers.len(), &mut self.cursor.account),
+            Focus::Servers => (
+                self.providers
+                    .get(self.account)
+                    .map_or(0, |p| p.groups().len()),
+                &mut self.cursor.server,
+            ),
+            Focus::Channels => (
+                self.providers
+                    .get(self.account)
+                    .map_or(0, |p| p.rooms(self.server).len()),
+                &mut self.cursor.room,
+            ),
+            Focus::Members => (self.members().len(), &mut self.cursor.member),
+            Focus::Messages | Focus::Compose => return,
+        };
+        let last = count.saturating_sub(1) as isize;
+        *index = (*index as isize).saturating_add(delta).clamp(0, last) as usize;
+    }
+    /// Enter opens the highlighted server, channel or account.
+    fn activate(&mut self, tx: &Requests) {
+        let cursor = self.cursor;
+        match self.focus {
+            Focus::Accounts if cursor.account != self.account => {
+                self.account = cursor.account;
+                self.server = 0;
+                self.room = 0;
+                self.select(tx);
+            }
+            Focus::Servers if cursor.server != self.server => {
+                self.server = cursor.server;
+                self.room = 0;
+                self.select(tx);
+            }
+            Focus::Channels if cursor.room != self.room => {
+                self.room = cursor.room;
+                self.select(tx);
+            }
+            _ => {}
+        }
+    }
+    fn page(&self) -> usize {
+        self.frame.get().rows.saturating_sub(1).max(1)
+    }
+    /// Positive amounts scroll toward older messages.
+    fn scroll_by(&mut self, amount: isize, tx: &Requests) {
+        self.scroll =
+            (self.scroll as isize + amount).clamp(0, self.max_scroll.get() as isize) as usize;
+        if amount > 0 && self.scroll == self.max_scroll.get() {
+            self.older(tx);
+        }
+    }
+    /// J / K: steps between messages, starting from the newest.
+    fn move_focus(&mut self, delta: isize, tx: &Requests) {
+        let count = self.timeline.messages.len();
+        if count == 0 {
+            return;
+        }
+        let current = self
+            .focused
+            .as_ref()
+            .and_then(|id| self.timeline.messages.iter().position(|m| m.id == *id));
+        let next = match current {
+            None => count - 1,
+            Some(index) => {
+                let next = index as isize + delta;
+                if next < 0 {
+                    self.older(tx);
+                }
+                next.clamp(0, count as isize - 1) as usize
+            }
+        };
+        self.focused = Some(self.timeline.messages[next].id.clone());
+        self.reveal(next);
+    }
+    /// Scrolls so the whole message is on screen, or at least its top.
+    fn reveal(&mut self, message: usize) {
+        let frame = self.frame.get();
+        if frame.rows == 0 {
+            return;
+        }
+        let lines = self.lines(self.selected().as_ref(), frame.width);
+        let Some(first) = lines.iter().position(|l| l.message == Some(message)) else {
+            return;
+        };
+        let last = lines
+            .iter()
+            .rposition(|l| l.message == Some(message))
+            .unwrap();
+        let total = lines.len();
+        let max = total.saturating_sub(frame.rows);
+        let end = total - self.scroll.min(max);
+        let start = end.saturating_sub(frame.rows);
+        if last >= end {
+            self.scroll = total - last - 1;
+        }
+        if first < start || last + 1 - first > frame.rows {
+            self.scroll = total.saturating_sub(first + frame.rows);
+        }
+        self.scroll = self.scroll.min(max);
+    }
+    /// Channels across every account, filtered by each word of the query.
+    fn switch_targets(&self, query: &str) -> Vec<(usize, usize, usize, String)> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut targets = vec![];
+        for (account, provider) in self.providers.iter().enumerate() {
+            for (server, group) in provider.groups().iter().enumerate() {
+                for (room, r) in group.rooms(&provider.provider).iter().enumerate() {
+                    let label = format!(
+                        "{} {} · {} · {}",
+                        glyph(&r.channel.kind),
+                        r.channel.name,
+                        group.name,
+                        provider.provider.name
+                    );
+                    let lower = label.to_lowercase();
+                    if words.iter().all(|w| lower.contains(w)) {
+                        targets.push((account, server, room, label));
+                    }
+                }
+            }
+        }
+        targets
+    }
+    fn switcher_key(&mut self, key: Key, tx: &Requests) {
+        let switcher = self.switcher.as_mut().unwrap();
+        match key {
+            Key::Esc => self.switcher = None,
+            Key::Up | Key::Ctrl('p') => switcher.cursor = switcher.cursor.saturating_sub(1),
+            Key::Down | Key::Ctrl('n') | Key::Char('\t') => switcher.cursor += 1,
+            Key::Backspace => {
+                if let Some((offset, _)) = switcher.query.grapheme_indices(true).next_back() {
+                    switcher.query.truncate(offset);
+                }
+                switcher.cursor = 0;
+            }
+            Key::Ctrl('u') => {
+                switcher.query.clear();
+                switcher.cursor = 0;
+            }
+            Key::Char('\n') => {
+                let query = switcher.query.clone();
+                let cursor = switcher.cursor;
+                let targets = self.switch_targets(&query);
+                if let Some(&(account, server, room, _)) =
+                    targets.get(cursor.min(targets.len().saturating_sub(1)))
+                {
+                    self.switcher = None;
+                    let changed = (account, server, room) != (self.account, self.server, self.room);
+                    (self.account, self.server, self.room) = (account, server, room);
+                    self.focus = Focus::Messages;
+                    if changed {
+                        self.select(tx);
+                    }
+                    self.sync_cursors();
+                }
+            }
+            Key::Char(c) if !c.is_control() && switcher.query.len() < QUERY_LIMIT => {
+                switcher.query.push(c);
+                switcher.cursor = 0;
+            }
+            _ => {}
+        }
     }
     fn send(&mut self, tx: &Requests) {
         let Some(room) = self.selected() else {
@@ -396,6 +748,110 @@ impl State {
             self.loading_older = true;
         }
     }
+    /// The message pane's content, oldest first.
+    fn lines(&self, room: Option<&Room>, width: usize) -> Vec<Line> {
+        let mut lines = Vec::new();
+        if let Some(provider) = self.providers.get(self.account)
+            && let ProviderStatus::LoginRequired(step) = &provider.status
+        {
+            for line in wrap(&step.message, width) {
+                lines.push(Line::plain(line, ACCENT, None));
+            }
+            if let Some(url) = &step.link {
+                for line in wrap(url, width) {
+                    lines.push(Line::plain(line, ACCENT, None));
+                }
+            }
+            lines.push(Line::plain("Press Ctrl+L to sign in.".into(), MUTED, None));
+            lines.push(Line::plain(String::new(), INK, None));
+        }
+        let Some(room) = room else {
+            if lines.is_empty() {
+                lines.push(Line::plain("Select a channel.".into(), MUTED, None));
+            }
+            return lines;
+        };
+        if let Some(topic) = &room.channel.topic {
+            for line in wrap(topic, width) {
+                lines.push(Line::plain(line, MUTED, None));
+            }
+            lines.push(Line::plain(String::new(), INK, None));
+        }
+        let messages = &self.timeline.messages;
+        if messages.is_empty() {
+            lines.push(Line::plain("No messages yet.".into(), MUTED, None));
+        }
+        let name = |id: &str| {
+            room.users
+                .get(id)
+                .map_or(id, |u| u.name.as_str())
+                .to_owned()
+        };
+        for (index, message) in messages.iter().enumerate() {
+            let previous = index.checked_sub(1).map(|i| &messages[i]);
+            let grouped = previous.is_some_and(|p| {
+                p.author == message.author
+                    && message.reply_to.is_none()
+                    && message.sent_at.saturating_sub(p.sent_at) < GROUP_MS
+            });
+            if !grouped {
+                if previous.is_some() {
+                    lines.push(Line::plain(String::new(), INK, None));
+                }
+                if let Some(reply) = &message.reply_to {
+                    let quoted = messages[..index].iter().rev().find(|m| m.id == *reply);
+                    let text = match quoted {
+                        Some(m) => format!("╭ {}: {}", name(&m.author), summary(m)),
+                        None => "╭ reply".into(),
+                    };
+                    let mut row = wrap(&text, width);
+                    row.truncate(1);
+                    for line in row {
+                        lines.push(Line::plain(line, MUTED, Some(index)));
+                    }
+                }
+                let minutes = message.sent_at / 60_000;
+                let author: String = wrap(&name(&message.author), width.saturating_sub(8))
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                lines.push(Line {
+                    text: author,
+                    color: ACCENT,
+                    extra: Some((
+                        format!(
+                            "{:02}:{:02}{}",
+                            minutes / 60 % 24,
+                            minutes % 60,
+                            if message.edited_at.is_some() {
+                                " (edited)"
+                            } else {
+                                ""
+                            }
+                        ),
+                        MUTED,
+                    )),
+                    message: Some(index),
+                });
+            }
+            for part in &message.content {
+                let (body, color) = match part {
+                    Content::Text(s) => (s.clone(), INK),
+                    Content::Formatted(s) => (s.text.clone(), INK),
+                    other => (attachment(other), MUTED),
+                };
+                for line in wrap(&body, width) {
+                    lines.push(Line {
+                        text: line,
+                        color,
+                        extra: None,
+                        message: Some(index),
+                    });
+                }
+            }
+        }
+        lines
+    }
     pub fn view(&self, size: TerminalSize) -> Vec<Node> {
         let (w, h) = (size.cols, size.rows);
         let mut nodes = vec![
@@ -415,269 +871,312 @@ impl State {
             ));
             return nodes;
         }
-        let left = if w >= 100 { 28 } else { 21 };
-        let accounts_h = (self.providers.len() as u16 + 3).clamp(5, 9).min(h - 10);
+        // Servers | Channels | Messages over [Accounts | Composer] | Members.
+        let servers_w = if w >= 100 { 18 } else { 12 };
+        let channels_w = if w >= 100 { 24 } else { 18 };
+        let members_w = if w >= 120 { 24 } else { 0 };
+        let chat_x = servers_w + channels_w;
+        let chat_w = w - chat_x - members_w;
+        let composer_h = 5;
+        let accounts_w = if chat_w >= 60 { 18 } else { 0 };
+        let groups = self.groups();
+        let focus = self.focus;
+
         panel(
             &mut nodes,
-            " Accounts ",
+            " Servers ",
             0,
             0,
-            left,
-            accounts_h,
-            self.focus == Focus::Accounts,
+            servers_w,
+            h,
+            focus == Focus::Servers,
         );
-        let visible = usize::from(accounts_h - 2);
-        let start = self.account.saturating_sub(visible.saturating_sub(1));
-        if self.providers.is_empty() {
-            nodes.push(text("No accounts yet", 2, 1, left - 4, 1, MUTED, PANEL));
-        }
-        for (row, (index, provider)) in self
-            .providers
+        let rows: Vec<(String, Color, bool)> = groups
             .iter()
             .enumerate()
-            .skip(start)
-            .take(visible)
-            .enumerate()
-        {
-            let marker = if index == self.account { "›" } else { " " };
-            let status = match provider.status {
-                ProviderStatus::Ready => "●",
-                ProviderStatus::LoginRequired(_) => "!",
-                _ => "○",
-            };
-            nodes.push(text(
-                &format!("{marker} {status} {}", provider.provider.name),
-                1,
-                1 + row as u16,
-                left - 2,
-                1,
-                if index == self.account { ACCENT } else { INK },
-                if index == self.account { SELECT } else { PANEL },
-            ));
-        }
-        let channels_y = accounts_h;
-        panel(
+            .map(|(i, g)| {
+                (
+                    g.name.to_owned(),
+                    if i == self.server { ACCENT } else { INK },
+                    true,
+                )
+            })
+            .collect();
+        let empty = if self.providers.is_empty() {
+            "No accounts"
+        } else {
+            "None"
+        };
+        list(
             &mut nodes,
-            " Channels ",
-            0,
-            channels_y,
-            left,
-            h - channels_y - 1,
-            self.focus == Focus::Channels,
+            &rows,
+            (1, 1, servers_w - 2, h - 2),
+            focus == Focus::Servers,
+            self.cursor.server,
+            empty,
         );
-        let rooms = self.rooms();
-        let visible = usize::from(h - channels_y - 3);
-        let start = self.room.saturating_sub(visible.saturating_sub(1));
-        if rooms.is_empty() {
-            nodes.push(text(
-                "No channels",
-                2,
-                channels_y + 1,
-                left - 4,
-                1,
-                MUTED,
-                PANEL,
-            ));
-        }
-        for (row, (index, room)) in rooms
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(visible)
-            .enumerate()
-        {
-            nodes.push(text(
-                &format!(
-                    "{} # {}",
-                    if index == self.room { "›" } else { " " },
-                    room.channel.name
-                ),
-                1,
-                channels_y + 1 + row as u16,
-                left - 2,
-                1,
-                if index == self.room { ACCENT } else { INK },
-                if index == self.room { SELECT } else { PANEL },
-            ));
-        }
-        let x = left;
-        let width = w - x;
-        let selected = self.selected();
-        let title = selected
-            .as_ref()
-            .map(|r| format!(" # {} / {} ", r.channel.name, r.group))
-            .unwrap_or_else(|| " Messages ".into());
+
+        let group = groups.get(self.server);
+        let title = group.map_or(" Channels ".into(), |g| format!(" {} ", g.name));
         panel(
             &mut nodes,
             &title,
-            x,
+            servers_w,
             0,
-            width,
-            h - 5,
-            self.focus == Focus::Messages,
+            channels_w,
+            h,
+            focus == Focus::Channels,
         );
-        let content_w = width - 4;
-        let mut lines: Vec<(String, Color)> = Vec::new();
-        if let Some(provider) = self.providers.get(self.account)
-            && let ProviderStatus::LoginRequired(step) = &provider.status
-        {
-            for line in wrap(&step.message, content_w as usize) {
-                lines.push((line, ACCENT));
-            }
-            if let Some(url) = &step.link {
-                for line in wrap(url, content_w as usize) {
-                    lines.push((line, ACCENT));
-                }
-            }
-            lines.push((
-                "Press Ctrl+L to sign in. Open browser links in your browser.".into(),
-                MUTED,
-            ));
-        }
-        if let Some(room) = &selected {
-            if let Some(topic) = &room.channel.topic {
-                for line in wrap(topic, content_w as usize) {
-                    lines.push((line, MUTED));
-                }
-                lines.push((String::new(), INK));
-            }
-            for message in &self.timeline.messages {
-                let author = room
-                    .users
-                    .get(&message.author)
-                    .map(|u| u.name.as_str())
-                    .unwrap_or(&message.author);
-                let minutes = message.sent_at / 60_000;
-                lines.push((
-                    format!(
-                        "{author}  {:02}:{:02} UTC{}",
-                        minutes / 60 % 24,
-                        minutes % 60,
-                        if message.edited_at.is_some() {
-                            " · edited"
-                        } else {
-                            ""
-                        }
+        let rows: Vec<(String, Color, bool)> = group
+            .map(Group::rows)
+            .unwrap_or_default()
+            .iter()
+            .map(|row| {
+                let indent = "  ".repeat(row.depth.min(4));
+                match row.room {
+                    None => (format!("{indent}▾ {}", row.channel.name), MUTED, false),
+                    Some(room) => (
+                        format!("{indent}{} {}", glyph(&row.channel.kind), row.channel.name),
+                        if room == self.room { ACCENT } else { INK },
+                        true,
                     ),
-                    ACCENT,
-                ));
-                if let Some(reply) = &message.reply_to {
-                    lines.push((format!("↳ reply to {reply}"), MUTED));
                 }
-                for part in &message.content {
-                    let body = match part {
-                        Content::Text(s) => s.clone(),
-                        Content::Formatted(s) => s.text.clone(),
-                        Content::Image(m)
-                        | Content::Video(m)
-                        | Content::Audio(m)
-                        | Content::File(m) => {
-                            format!("[attachment: {}]", m.name.as_deref().unwrap_or("unnamed"))
-                        }
-                        Content::Custom { kind, .. } => format!("[{kind}]"),
-                    };
-                    for line in wrap(&body, content_w as usize) {
-                        lines.push((line, INK));
-                    }
-                }
-                lines.push((String::new(), INK));
+            })
+            .collect();
+        let cursor_row = nth_selectable(&rows, self.cursor.room);
+        list(
+            &mut nodes,
+            &rows,
+            (servers_w + 1, 1, channels_w - 2, h - 2),
+            focus == Focus::Channels,
+            cursor_row,
+            "No channels",
+        );
+
+        let selected = self.selected();
+        let title = selected
+            .as_ref()
+            .map(|r| format!(" {} {} ", glyph(&r.channel.kind), r.channel.name))
+            .unwrap_or_else(|| " Messages ".into());
+        let chat_h = h - composer_h;
+        panel(
+            &mut nodes,
+            &title,
+            chat_x,
+            0,
+            chat_w,
+            chat_h,
+            focus == Focus::Messages,
+        );
+        let content_w = chat_w - 4;
+        let rows = usize::from(chat_h - 2);
+        let lines = self.lines(selected.as_ref(), usize::from(content_w));
+        self.frame.set(Frame {
+            width: usize::from(content_w),
+            rows,
+            members: members_w > 0,
+            accounts: accounts_w > 0,
+        });
+        self.max_scroll.set(lines.len().saturating_sub(rows));
+        let end = lines.len() - self.scroll.min(self.max_scroll.get());
+        let start = end.saturating_sub(rows);
+        let focused = self
+            .focused
+            .as_ref()
+            .and_then(|id| self.timeline.messages.iter().position(|m| m.id == *id));
+        for (row, line) in lines[start..end].iter().enumerate() {
+            let bg = if focused.is_some() && line.message == focused {
+                SELECT
+            } else {
+                PANEL
+            };
+            let y = 1 + row as u16;
+            nodes.push(text(
+                &format!(" {}", line.text),
+                chat_x + 1,
+                y,
+                content_w + 2,
+                1,
+                line.color,
+                bg,
+            ));
+            if let Some((extra, color)) = &line.extra {
+                let x = chat_x + 2 + line.text.width() as u16 + 2;
+                let width = (chat_x + 2 + content_w).saturating_sub(x);
+                nodes.push(text(extra, x, y, width, 1, *color, bg));
             }
         }
-        if lines.is_empty() {
-            let empty = if selected.is_some() {
-                "No messages yet."
-            } else {
-                "Select a channel."
-            };
-            lines.extend(
-                wrap(empty, content_w as usize)
-                    .into_iter()
-                    .map(|s| (s, MUTED)),
+        if accounts_w > 0 {
+            panel(
+                &mut nodes,
+                " Accounts ",
+                chat_x,
+                chat_h,
+                accounts_w,
+                composer_h,
+                focus == Focus::Accounts,
+            );
+            let rows: Vec<(String, Color, bool)> = self
+                .providers
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let status = match p.status {
+                        ProviderStatus::Ready => "●",
+                        ProviderStatus::LoginRequired(_) => "!",
+                        _ => "○",
+                    };
+                    (
+                        format!("{status} {}", p.provider.name),
+                        if i == self.account { ACCENT } else { INK },
+                        true,
+                    )
+                })
+                .collect();
+            list(
+                &mut nodes,
+                &rows,
+                (chat_x + 1, chat_h + 1, accounts_w - 2, composer_h - 2),
+                focus == Focus::Accounts,
+                self.cursor.account,
+                "None",
             );
         }
-        let rows = usize::from(h - 7);
-        self.max_scroll.set(lines.len().saturating_sub(rows));
-        let end = lines
-            .len()
-            .saturating_sub(self.scroll.min(lines.len().saturating_sub(rows)));
-        let start = end.saturating_sub(rows);
-        for (row, (line, color)) in lines[start..end].iter().enumerate() {
-            nodes.push(text(
-                line,
-                x + 2,
-                1 + row as u16,
-                content_w,
-                1,
-                *color,
-                PANEL,
-            ));
-        }
-        let composer_title = if self.pending.is_some() {
+        let composer_x = chat_x + accounts_w;
+        let composer_w = chat_w - accounts_w;
+        let title = if self.pending.is_some() {
             " Sending… "
         } else {
-            " Message "
+            " Composer "
         };
         panel(
             &mut nodes,
-            composer_title,
-            x,
-            h - 5,
-            width,
-            4,
-            self.focus == Focus::Compose,
+            title,
+            composer_x,
+            chat_h,
+            composer_w,
+            composer_h,
+            focus == Focus::Compose,
         );
+        let inner = composer_w - 4;
         let draft = self.draft();
-        let body = if draft.is_empty() {
-            if self.focus == Focus::Compose {
-                "▏".to_string()
-            } else {
-                String::new()
-            }
+        if draft.is_empty() && focus != Focus::Compose {
+            let placeholder = selected
+                .as_ref()
+                .map(|r| format!("Message {} {}", glyph(&r.channel.kind), r.channel.name))
+                .unwrap_or_default();
+            nodes.push(text(
+                &placeholder,
+                composer_x + 2,
+                chat_h + 1,
+                inner,
+                1,
+                MUTED,
+                PANEL,
+            ));
         } else {
-            format!(
-                "{draft}{}",
-                if self.focus == Focus::Compose {
-                    "▏"
-                } else {
-                    ""
-                }
+            let cursor = if focus == Focus::Compose { "▏" } else { "" };
+            let wrapped = wrap(&format!("{draft}{cursor}"), usize::from(inner));
+            let start = wrapped.len().saturating_sub(2);
+            nodes.push(text(
+                &wrapped[start..].join("\n"),
+                composer_x + 2,
+                chat_h + 1,
+                inner,
+                2,
+                INK,
+                PANEL,
+            ));
+        }
+        let (status, color) = if self.status.is_empty() {
+            ("F1 help".to_owned(), MUTED)
+        } else {
+            (
+                wrap(&self.status, usize::from(inner))
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                ACCENT,
             )
         };
-        let wrapped = wrap(&body, content_w as usize);
-        let start = wrapped.len().saturating_sub(2);
-        nodes.push(text(
-            &wrapped[start..].join("\n"),
-            x + 2,
-            h - 4,
-            content_w,
-            2,
-            INK,
-            PANEL,
-        ));
-        nodes.push(text(
-            &self.status,
-            1,
-            h - 1,
-            w.saturating_sub(12),
-            1,
-            MUTED,
-            PANEL,
-        ));
-        nodes.push(text(
-            "F1 Help",
-            w.saturating_sub(8),
-            h - 1,
-            7,
-            1,
-            MUTED,
-            PANEL,
-        ));
+        let used = status.width() as u16;
+        let x = if self.status.is_empty() {
+            composer_x + 2 + inner - used
+        } else {
+            composer_x + 2
+        };
+        nodes.push(text(&status, x, chat_h + 3, used, 1, color, PANEL));
+
+        if members_w > 0 {
+            let x = w - members_w;
+            panel(
+                &mut nodes,
+                " Members ",
+                x,
+                0,
+                members_w,
+                h,
+                focus == Focus::Members,
+            );
+            let rows: Vec<(String, Color, bool)> = self
+                .members()
+                .iter()
+                .map(|u| (u.name.clone(), INK, true))
+                .collect();
+            list(
+                &mut nodes,
+                &rows,
+                (x + 1, 1, members_w - 2, h - 2),
+                focus == Focus::Members,
+                self.cursor.member,
+                "No members",
+            );
+        }
+
         if self.help {
-            let mw = 56.min(w - 4);
+            let mw = 62.min(w - 4);
+            let mh = (HELP.len() as u16 + 2).min(h);
             let mx = (w - mw) / 2;
-            let my = (h - 13) / 2;
-            panel(&mut nodes, " Keyboard help ", mx, my, mw, 13, true);
-            nodes.push(text("Tab / Shift+Tab    Next / previous pane\n↑ / ↓              Select account or channel\nEnter / i          Write in selected channel\nEnter              Send message\nAlt+Enter          New line\nBackspace / Ctrl+U Delete character / clear draft\nPgUp / PgDn        Scroll and load older messages\nEnd                Return to latest messages\nCtrl+R / Ctrl+L    Refresh / sign in\nEsc                Focus channels\nCtrl+Q / Ctrl+C    Quit · any key closes help", mx + 2, my + 1, mw - 4, 11, INK, PANEL));
+            let my = (h - mh) / 2;
+            panel(&mut nodes, " Keyboard help ", mx, my, mw, mh, true);
+            let body: Vec<String> = HELP.iter().map(|(k, v)| format!("{k:<19}{v}")).collect();
+            nodes.push(text(
+                &body.join("\n"),
+                mx + 2,
+                my + 1,
+                mw - 4,
+                mh - 2,
+                INK,
+                PANEL,
+            ));
+        }
+        if let Some(switcher) = &self.switcher {
+            let mw = 64.min(w - 4);
+            let mh = 16.min(h - 2);
+            let mx = (w - mw) / 2;
+            let my = (h - mh) / 2;
+            panel(&mut nodes, " Switch channel ", mx, my, mw, mh, true);
+            nodes.push(text(
+                &format!("› {}▏", switcher.query),
+                mx + 2,
+                my + 1,
+                mw - 4,
+                1,
+                INK,
+                PANEL,
+            ));
+            let targets = self.switch_targets(&switcher.query);
+            let rows: Vec<(String, Color, bool)> =
+                targets.into_iter().map(|t| (t.3, INK, true)).collect();
+            let cursor = switcher.cursor.min(rows.len().saturating_sub(1));
+            list(
+                &mut nodes,
+                &rows,
+                (mx + 1, my + 2, mw - 2, mh - 3),
+                true,
+                cursor,
+                "No matches",
+            );
         }
         if let Some(form) = &self.login {
             let mw = 60.min(w - 4);
@@ -752,6 +1251,86 @@ impl State {
         nodes
     }
 }
+/// Draws list rows with one cell of padding; the focused list shows its cursor.
+fn list(
+    nodes: &mut Vec<Node>,
+    rows: &[(String, Color, bool)],
+    (x, y, w, h): (u16, u16, u16, u16),
+    focused: bool,
+    cursor: usize,
+    empty: &str,
+) {
+    if rows.is_empty() {
+        nodes.push(text(empty, x + 1, y, w.saturating_sub(2), 1, MUTED, PANEL));
+        return;
+    }
+    let visible = usize::from(h);
+    let start = cursor.saturating_sub(visible.saturating_sub(1));
+    for (row, (index, (label, color, _))) in rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .enumerate()
+    {
+        let bg = if focused && index == cursor {
+            SELECT
+        } else {
+            PANEL
+        };
+        nodes.push(text(
+            &format!(" {label}"),
+            x,
+            y + row as u16,
+            w,
+            1,
+            *color,
+            bg,
+        ));
+    }
+}
+/// The row index of the `n`th selectable row.
+fn nth_selectable(rows: &[(String, Color, bool)], n: usize) -> usize {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| r.2)
+        .nth(n)
+        .map_or(0, |(i, _)| i)
+}
+fn glyph(kind: &ChannelKind) -> &'static str {
+    match kind {
+        ChannelKind::Direct | ChannelKind::Group => "@",
+        ChannelKind::Voice | ChannelKind::Video => "♪",
+        ChannelKind::Forum => "≡",
+        ChannelKind::Thread => "↳",
+        _ => "#",
+    }
+}
+fn attachment(content: &Content) -> String {
+    let (kind, media) = match content {
+        Content::Image(m) => ("image", m),
+        Content::Video(m) => ("video", m),
+        Content::Audio(m) => ("audio", m),
+        Content::File(m) => ("file", m),
+        Content::Custom { kind, .. } => return format!("[{kind}]"),
+        Content::Text(_) | Content::Formatted(_) => return String::new(),
+    };
+    format!("[{kind}: {}]", media.name.as_deref().unwrap_or("unnamed"))
+}
+/// The first line of a message, for reply previews.
+fn summary(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .map(|part| match part {
+            Content::Text(s) => s.clone(),
+            Content::Formatted(s) => s.text.clone(),
+            other => attachment(other),
+        })
+        .find(|s| !s.trim().is_empty())
+        .and_then(|s| s.lines().next().map(str::to_owned))
+        .unwrap_or_default()
+}
 fn text(value: &str, x: u16, y: u16, w: u16, h: u16, color: Color, bg: Color) -> Node {
     Text::new(value)
         .color(color)
@@ -776,14 +1355,19 @@ fn panel(nodes: &mut Vec<Node>, title: &str, x: u16, y: u16, w: u16, h: u16, foc
             .into(),
     );
 }
+/// Wraps at spaces, breaking only words wider than a line. Drops control characters.
 pub fn wrap(value: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![];
     }
     let mut lines = Vec::new();
     for line in value.split('\n') {
-        let mut row = String::new();
-        let mut used = 0;
+        let mut row = Row {
+            text: String::new(),
+            used: 0,
+            width,
+        };
+        let mut word = Vec::new();
         for grapheme in line.graphemes(true) {
             if grapheme.chars().any(char::is_control) {
                 continue;
@@ -792,16 +1376,48 @@ pub fn wrap(value: &str, width: usize) -> Vec<String> {
             if n > width {
                 continue;
             }
-            if used + n > width {
-                lines.push(std::mem::take(&mut row));
-                used = 0;
+            if grapheme.chars().all(char::is_whitespace) {
+                row.place(&mut word, &mut lines);
+                if row.used + n > width {
+                    row.flush(&mut lines);
+                } else {
+                    row.text.push_str(grapheme);
+                    row.used += n;
+                }
+            } else {
+                word.push((grapheme, n));
             }
-            row.push_str(grapheme);
-            used += n;
         }
-        lines.push(row);
+        row.place(&mut word, &mut lines);
+        lines.push(row.text);
     }
     lines
+}
+struct Row {
+    text: String,
+    used: usize,
+    width: usize,
+}
+impl Row {
+    fn flush(&mut self, lines: &mut Vec<String>) {
+        lines.push(self.text.trim_end().to_owned());
+        self.text.clear();
+        self.used = 0;
+    }
+    /// Adds a word, starting a new line first when it fits on one.
+    fn place(&mut self, word: &mut Vec<(&str, usize)>, lines: &mut Vec<String>) {
+        let total: usize = word.iter().map(|g| g.1).sum();
+        if self.used > 0 && self.used + total > self.width && total <= self.width {
+            self.flush(lines);
+        }
+        for (grapheme, n) in word.drain(..) {
+            if self.used + n > self.width {
+                self.flush(lines);
+            }
+            self.text.push_str(grapheme);
+            self.used += n;
+        }
+    }
 }
 
 struct LoginForm {
@@ -917,11 +1533,18 @@ impl LoginForm {
 mod tests {
     use super::*;
     use crate::{
-        client::{Update, requests},
+        client::{Requests, Update, requests},
         demo_state,
         model::Snapshot,
     };
     use qmsg_types::{HistoryPage, Message};
+
+    /// Sends each character as a key; Esc is `\x1b`.
+    fn press(state: &mut State, tx: &Requests, keys: &str) {
+        for c in keys.chars() {
+            state.key(if c == '\x1b' { Key::Esc } else { Key::Char(c) }, tx);
+        }
+    }
 
     #[test]
     fn drafts_stay_with_their_channel() {
@@ -929,10 +1552,10 @@ mod tests {
         let (tx, _rx, _selection) = requests(8);
         state.key(Key::Char('i'), &tx);
         state.key(Key::Char('é'), &tx);
-        state.key(Key::Esc, &tx);
-        state.key(Key::Down, &tx);
+        press(&mut state, &tx, "\x1bhj\n");
+        assert_eq!(state.selected().unwrap().channel.name, "design");
         assert_eq!(state.draft(), "");
-        state.key(Key::Up, &tx);
+        press(&mut state, &tx, "k\n");
         assert_eq!(state.draft(), "é");
     }
 
@@ -941,7 +1564,7 @@ mod tests {
         let mut state = demo_state();
         let (tx, _rx, _selection) = requests(8);
         let old = state.selected().unwrap().target;
-        state.key(Key::Down, &tx);
+        press(&mut state, &tx, "j\n");
         let page = HistoryPage {
             messages: vec![Message::new("old", old.channel.clone(), "user", 0, vec![])],
             next_cursor: None,
@@ -1001,15 +1624,11 @@ mod tests {
         state.key(Key::Char('a'), &tx);
         state.key(Key::Char('\n'), &tx);
         state.key(Key::Char('b'), &tx);
-        state.key(Key::Esc, &tx);
-        state.key(Key::Down, &tx);
-        state.key(Key::Char('i'), &tx);
-        state.key(Key::Char('z'), &tx);
+        press(&mut state, &tx, "\x1bhj\niz");
         state.update(Update::SendFailed(target, "offline".into()), &tx);
         assert_eq!(state.status, "offline");
         assert_eq!(state.draft(), "z");
-        state.key(Key::Esc, &tx);
-        state.key(Key::Up, &tx);
+        press(&mut state, &tx, "\x1bhk\n");
         assert_eq!(state.draft(), "a\nb");
         assert!(state.pending.is_none());
     }
@@ -1079,7 +1698,7 @@ mod tests {
         other.channel.channel = "random".into();
         state.view(size);
         state.focus = Focus::Messages;
-        state.key(Key::Up, &tx);
+        state.key(Key::Char('k'), &tx);
         assert_eq!(state.scroll, 1);
         state.update(Update::Sent(other), &tx);
         assert_eq!(state.scroll, 1);
@@ -1104,14 +1723,14 @@ mod tests {
         }
         assert_eq!(state.scroll, top);
         state.key(Key::PageDown, &tx);
-        assert_eq!(state.scroll, top.saturating_sub(10));
+        assert_eq!(state.scroll, top.saturating_sub(state.page()));
     }
 
     #[test]
     fn provider_restart_keeps_selection_and_draft() {
         let mut state = live();
         let (tx, _rx, mut selection) = requests(8);
-        state.key(Key::Down, &tx);
+        press(&mut state, &tx, "j\n");
         state.key(Key::Char('i'), &tx);
         state.key(Key::Char('x'), &tx);
         let old = state.selected().unwrap().target;
@@ -1187,6 +1806,9 @@ mod tests {
     fn unicode_wrap_and_backspace_keep_graphemes_whole() {
         assert_eq!(wrap("a界e\u{301}", 3), vec!["a界", "e\u{301}"]);
         assert_eq!(wrap("\x1bhello\r", 20), vec!["hello"]);
+        assert_eq!(wrap("hello big world", 9), vec!["hello big", "world"]);
+        assert_eq!(wrap("ab cdefghijk", 4), vec!["ab c", "defg", "hijk"]);
+        assert_eq!(wrap("one\n\ntwo  ", 10), vec!["one", "", "two  "]);
         let mut state = demo_state();
         let (tx, _rx, _selection) = requests(8);
         state.key(Key::Char('i'), &tx);
@@ -1221,6 +1843,171 @@ mod tests {
                 fxcode::Renderer::with_kitty(Vec::new(), size, fxcode::KittyMode::Disabled);
             renderer.draw(&state.view(size)).unwrap();
         }
+    }
+
+    fn size(cols: u16, rows: u16) -> TerminalSize {
+        TerminalSize {
+            cols,
+            rows,
+            ..TerminalSize::default()
+        }
+    }
+
+    #[test]
+    fn list_motion_highlights_and_only_enter_opens() {
+        let mut state = live();
+        let (tx, _rx, mut selection) = requests(8);
+        assert_eq!(state.focus, Focus::Channels);
+        press(&mut state, &tx, "jj");
+        assert_eq!(state.selected().unwrap().channel.name, "general");
+        assert!(!selection.has_changed().unwrap());
+        press(&mut state, &tx, "k\n");
+        assert_eq!(state.selected().unwrap().channel.name, "design");
+        let picked = selection.borrow_and_update().clone().unwrap();
+        assert_eq!(picked.channel.channel, "design");
+    }
+
+    #[test]
+    fn normal_mode_keys_never_type_into_the_draft() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(8);
+        state.view(size(100, 30));
+        press(&mut state, &tx, "lxyz");
+        assert_eq!(state.focus, Focus::Messages);
+        assert_eq!(state.draft(), "");
+        press(&mut state, &tx, "iab\x1bxz");
+        assert_eq!(state.draft(), "ab");
+        assert_eq!(state.focus, Focus::Messages);
+        press(&mut state, &tx, "icd;q");
+        assert_eq!(state.draft(), "abcd");
+        assert_eq!(state.focus, Focus::Messages);
+        assert!(sent(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn panel_ring_follows_the_visible_panes() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(8);
+        let visit = |state: &mut State, cols| {
+            state.view(size(cols, 30));
+            state.focus = Focus::Servers;
+            let mut seen = vec![];
+            for _ in 0..6 {
+                state.key(Key::Char('l'), &tx);
+                seen.push(state.focus);
+            }
+            seen
+        };
+        use Focus::*;
+        assert_eq!(
+            visit(&mut state, 80),
+            [Channels, Messages, Servers, Channels, Messages, Servers]
+        );
+        assert_eq!(
+            visit(&mut state, 140),
+            [Channels, Messages, Accounts, Members, Servers, Channels]
+        );
+        state.key(Key::Char('H'), &tx);
+        assert_eq!(state.focus, Servers);
+        state.key(Key::BackTab, &tx);
+        assert_eq!(state.focus, Members);
+    }
+
+    #[test]
+    fn message_focus_steps_and_keeps_the_message_on_screen() {
+        let mut state = live();
+        let (tx, _rx, _selection) = requests(8);
+        let channel = state.selected().unwrap().target.channel;
+        state.timeline.messages = (0..30)
+            .map(|i| {
+                Message::new(
+                    i.to_string(),
+                    channel.clone(),
+                    if i % 2 == 0 { "Ana" } else { "Claudio" },
+                    i * 60_000,
+                    vec![Content::Text(format!("message {i}"))],
+                )
+            })
+            .collect();
+        state.view(size(80, 16));
+        state.focus = Focus::Messages;
+        state.key(Key::Char('K'), &tx);
+        assert_eq!(state.focused.as_deref(), Some("29"));
+        assert_eq!(state.scroll, 0);
+        for _ in 0..10 {
+            state.key(Key::Char('K'), &tx);
+        }
+        assert_eq!(state.focused.as_deref(), Some("19"));
+        let frame = state.frame.get();
+        let lines = state.lines(state.selected().as_ref(), frame.width);
+        let first = lines.iter().position(|l| l.message == Some(19)).unwrap();
+        let end = lines.len() - state.scroll;
+        assert!(first >= end - frame.rows && first < end);
+        state.key(Key::Char('J'), &tx);
+        assert_eq!(state.focused.as_deref(), Some("20"));
+        state.key(Key::Char('G'), &tx);
+        assert_eq!((state.focused.as_deref(), state.scroll), (None, 0));
+    }
+
+    #[test]
+    fn gg_jumps_to_the_oldest_loaded_line_and_asks_for_more() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(8);
+        state.timeline.cursor = Some("older".into());
+        state.view(size(60, 16));
+        state.focus = Focus::Messages;
+        press(&mut state, &tx, "g");
+        assert_eq!(state.scroll, 0);
+        press(&mut state, &tx, "g");
+        assert_eq!(state.scroll, state.max_scroll.get());
+        assert!(matches!(rx.try_recv(), Ok(Request::Older(_, cursor)) if cursor == "older"));
+        // A lone g followed by another key does not jump later.
+        press(&mut state, &tx, "Ggjg");
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn quick_switcher_opens_a_channel_in_another_account() {
+        let mut state = live();
+        let (tx, _rx, mut selection) = requests(8);
+        let mut other = state.providers[0].clone();
+        other.provider.name = "Work".into();
+        other.organizations[0].name = "Office".into();
+        state.providers.push(other);
+        state.key(Key::Ctrl('k'), &tx);
+        state.paste("rand office");
+        state.key(Key::Char('\n'), &tx);
+        let room = state.selected().unwrap();
+        assert_eq!(room.channel.name, "random");
+        assert_eq!(room.target.provider.name, "Work");
+        assert!(state.switcher.is_none());
+        assert_eq!(
+            selection
+                .borrow_and_update()
+                .as_ref()
+                .unwrap()
+                .provider
+                .name,
+            "Work"
+        );
+        state.key(Key::Ctrl('k'), &tx);
+        press(&mut state, &tx, "nothing-matches\n");
+        assert!(state.switcher.is_some());
+        state.key(Key::Esc, &tx);
+        assert!(state.switcher.is_none());
+    }
+
+    #[test]
+    fn help_fits_the_smallest_terminal() {
+        let mut state = demo_state();
+        let (tx, _rx, _selection) = requests(8);
+        state.key(Key::F(1), &tx);
+        let tree = format!("{:?}", state.view(size(60, 16)));
+        for (keys, _) in HELP {
+            assert!(tree.contains(keys), "{keys} is missing");
+        }
+        state.key(Key::Char('x'), &tx);
+        assert!(!state.help);
     }
 
     #[test]

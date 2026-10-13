@@ -1,4 +1,4 @@
-use qmsg_types::{Channel, ChannelRef, Message, ProviderStatus, User};
+use qmsg_types::{Channel, ChannelKind, ChannelRef, Message, ProviderStatus, User};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -46,43 +46,107 @@ impl Target {
 pub struct Room<'a> {
     pub target: Target,
     pub channel: &'a Channel,
-    pub group: &'a str,
     pub users: &'a BTreeMap<String, User>,
 }
+/// A server or the direct messages of one account, shown in the server rail.
+pub struct Group<'a> {
+    pub organization: Option<&'a str>,
+    pub name: &'a str,
+    pub scope: &'a Scope,
+}
+/// A line of the channel list: a category heading or an openable channel.
+pub struct Row<'a> {
+    pub channel: &'a Channel,
+    pub depth: usize,
+    /// Index into [`Group::rooms`], or `None` for a category heading.
+    pub room: Option<usize>,
+}
 impl Provider {
-    pub fn rooms(&self) -> Vec<Room<'_>> {
-        let mut rooms = Vec::new();
-        let scopes = self
-            .standalone
+    /// Direct messages first, then servers in snapshot order.
+    pub fn groups(&self) -> Vec<Group<'_>> {
+        self.standalone
             .iter()
-            .map(|s| (None, "Direct messages", s))
-            .chain(
-                self.organizations
-                    .iter()
-                    .map(|o| (Some(o.id.clone()), o.name.as_str(), &o.scope)),
-            );
-        for (organization, group, scope) in scopes {
-            let mut channels: Vec<_> = scope.channels.values().collect();
-            channels.sort_by_key(|c| (c.position.unwrap_or(u32::MAX), c.name.clone()));
-            for channel in channels {
-                if matches!(channel.kind, qmsg_types::ChannelKind::Category) {
-                    continue;
-                }
-                rooms.push(Room {
-                    target: Target {
-                        provider: self.provider.clone(),
-                        channel: ChannelRef {
-                            organization: organization.clone(),
-                            channel: channel.id.clone(),
-                        },
-                    },
-                    channel,
-                    group,
-                    users: &scope.users,
-                });
+            .map(|scope| Group {
+                organization: None,
+                name: "Direct messages",
+                scope,
+            })
+            .chain(self.organizations.iter().map(|o| Group {
+                organization: Some(&o.id),
+                name: &o.name,
+                scope: &o.scope,
+            }))
+            .collect()
+    }
+    pub fn rooms(&self, group: usize) -> Vec<Room<'_>> {
+        self.groups()
+            .get(group)
+            .map(|g| g.rooms(&self.provider))
+            .unwrap_or_default()
+    }
+}
+impl<'a> Group<'a> {
+    /// Channels in tree order: each parent, then its children, by position.
+    pub fn rows(&self) -> Vec<Row<'a>> {
+        let channels = &self.scope.channels;
+        let mut children: BTreeMap<Option<&str>, Vec<&Channel>> = BTreeMap::new();
+        for channel in channels.values() {
+            let parent = channel
+                .parent
+                .as_deref()
+                .filter(|p| channels.contains_key(*p) && *p != channel.id);
+            children.entry(parent).or_default().push(channel);
+        }
+        for list in children.values_mut() {
+            // Uncategorized channels come before categories, as on Discord.
+            list.sort_by_key(|c| {
+                (
+                    matches!(c.kind, ChannelKind::Category),
+                    c.position.unwrap_or(u32::MAX),
+                    c.name.clone(),
+                )
+            });
+        }
+        let mut rows = Vec::new();
+        let mut stack: Vec<(&Channel, usize)> = children
+            .get(&None)
+            .map(|l| l.iter().rev().map(|c| (*c, 0)).collect())
+            .unwrap_or_default();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut rooms = 0;
+        while let Some((channel, depth)) = stack.pop() {
+            if !seen.insert(channel.id.as_str()) {
+                continue;
+            }
+            let heading = matches!(channel.kind, ChannelKind::Category);
+            rows.push(Row {
+                channel,
+                depth,
+                room: (!heading).then_some(rooms),
+            });
+            rooms += usize::from(!heading);
+            if let Some(list) = children.get(&Some(channel.id.as_str())) {
+                stack.extend(list.iter().rev().map(|c| (*c, depth + 1)));
             }
         }
-        rooms
+        rows
+    }
+    pub fn rooms(&self, provider: &ProviderId) -> Vec<Room<'a>> {
+        self.rows()
+            .into_iter()
+            .filter(|row| row.room.is_some())
+            .map(|row| Room {
+                target: Target {
+                    provider: provider.clone(),
+                    channel: ChannelRef {
+                        organization: self.organization.map(str::to_owned),
+                        channel: row.channel.id.clone(),
+                    },
+                },
+                channel: row.channel,
+                users: &self.scope.users,
+            })
+            .collect()
     }
 }
 #[derive(Default)]
@@ -207,6 +271,55 @@ mod tests {
         assert_eq!(
             timeline.messages[1].content,
             vec![qmsg_types::Content::Text("edited".into())]
+        );
+    }
+    #[test]
+    fn channel_rows_put_children_under_their_category_or_parent() {
+        use qmsg_types::ChannelKind::{Category, Text, Thread};
+        let mut scope = Scope::default();
+        for (id, kind, parent, position) in [
+            ("talk", Category, None, 1),
+            ("lobby", Text, None, 5),
+            ("general", Text, Some("talk"), 2),
+            ("art", Text, Some("talk"), 1),
+            ("idea", Thread, Some("general"), 0),
+            ("lost", Text, Some("missing"), 0),
+        ] {
+            let mut channel = Channel::new(id, id, kind);
+            channel.parent = parent.map(Into::into);
+            channel.position = Some(position);
+            scope.channels.insert(id.into(), channel);
+        }
+        let group = Group {
+            organization: Some("org"),
+            name: "Org",
+            scope: &scope,
+        };
+        let rows: Vec<_> = group
+            .rows()
+            .iter()
+            .map(|r| (r.channel.id.as_str(), r.depth, r.room))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("lost", 0, Some(0)),
+                ("lobby", 0, Some(1)),
+                ("talk", 0, None),
+                ("art", 1, Some(2)),
+                ("general", 1, Some(3)),
+                ("idea", 2, Some(4)),
+            ]
+        );
+        let provider = ProviderId {
+            name: "p".into(),
+            instance: 1,
+        };
+        let rooms = group.rooms(&provider);
+        assert_eq!(rooms.len(), 5);
+        assert_eq!(
+            rooms[3].target.channel,
+            ChannelRef::new(Some("org"), "general")
         );
     }
 }

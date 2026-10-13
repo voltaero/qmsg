@@ -41,23 +41,36 @@ HTTP/2 tunnel. The client checks private certificates against the fingerprint
 in the pairing payload and checks the server host name. See the
 [app API guide](../qmsg-orchestrator/APP_API.md) for server and tunnel setup.
 
-## Keys
+## Layout and keys
+
+The layout follows tuicord-v2: servers, channels, and messages side by side,
+with the account list and composer under the messages. Terminals at least 120
+columns wide also show members; narrow terminals hide the account list, and the
+quick switcher still reaches every account.
+
+Navigation is modal like Vim. In normal mode, letters move around and never type.
+Press `i` to write; Esc or `;q` returns to normal mode and keeps the draft.
 
 | Key | Action |
 | --- | --- |
-| Tab / Shift+Tab | Next / previous pane |
-| Up / Down | Pick an account or channel; scroll in the message pane |
-| Enter / i | Start a message from the channel pane |
-| Enter in composer | Send |
-| Alt+Enter | Add a line |
-| Backspace / Ctrl+U | Delete a character / clear draft |
-| Page Up / Page Down | Scroll; Page Up also requests older history |
-| End in message pane | Return to latest messages |
-| Ctrl+L | Sign in to the selected provider |
+| Tab / Shift+Tab, h / l, H / L | Previous / next panel |
+| j / k, ↓ / ↑ | Move in a list; Enter opens the server, channel, or account |
+| j / k in messages | Scroll a line |
+| J / K, ↓ / ↑ in messages | Next / previous message |
+| gg / G | Oldest loaded / newest messages |
+| Page Up / Page Down | Scroll a page; reaching the top loads older history |
+| i | Write in the open channel |
+| Esc / ;q | Leave insert mode |
+| Enter / Alt+Enter | Send / add a line |
+| Backspace / Ctrl+U | Delete a character / clear the draft |
+| Ctrl+K or + | Quick switch to any channel of any account |
+| Ctrl+L | Sign in to the selected account |
 | Ctrl+R | Refresh |
-| Esc | Return to channels; cancel a sign-in form |
-| F1 | Show keyboard help |
+| F1 or Ctrl+/ | Show keyboard help |
 | Ctrl+Q / Ctrl+C | Quit |
+
+Moving through a list only highlights a row, as in tuicord; Enter opens it.
+Channels sit under their categories, and threads under their channels.
 
 Drafts stay with each channel for the current session. Sending holds the
 submitted message until the result arrives; you can keep writing the next draft.

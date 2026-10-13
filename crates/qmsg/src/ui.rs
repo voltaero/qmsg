@@ -146,8 +146,7 @@ impl State {
                         self.timeline.prepend(page);
                         self.loading_older = false;
                     } else if self.scroll == 0 {
-                        self.timeline.messages = page.messages;
-                        self.timeline.cursor = page.next_cursor;
+                        self.timeline.refresh(page);
                     }
                 }
             }
@@ -873,6 +872,37 @@ mod tests {
         state.key(Key::Esc, &tx);
         state.key(Key::Up, &tx);
         assert_eq!(state.draft(), "");
+    }
+
+    #[test]
+    fn refreshing_latest_history_keeps_loaded_older_messages() {
+        let mut state = demo_state();
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        let target = state.selected().unwrap().target;
+        let message = |id: &str, time| Message::new(id, target.channel.clone(), "me", time, vec![]);
+        state.timeline.messages = vec![message("1", 1), message("2", 2), message("3", 3)];
+        state.timeline.cursor = Some("oldest-loaded".into());
+        state.update(
+            Update::History(
+                target.clone(),
+                HistoryPage {
+                    messages: vec![message("3", 3), message("4", 4)],
+                    next_cursor: Some("newest-page".into()),
+                },
+                false,
+            ),
+            &tx,
+        );
+        assert_eq!(
+            state
+                .timeline
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1", "2", "3", "4"]
+        );
+        assert_eq!(state.timeline.cursor.as_deref(), Some("oldest-loaded"));
     }
 
     #[test]

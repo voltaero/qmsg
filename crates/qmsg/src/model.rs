@@ -85,6 +85,34 @@ pub struct Timeline {
     pub cursor: Option<String>,
 }
 impl Timeline {
+    pub fn refresh(&mut self, page: qmsg_types::HistoryPage) {
+        let Some(first) = page.messages.first() else {
+            self.messages.clear();
+            self.cursor = page.next_cursor;
+            return;
+        };
+        if page.next_cursor.is_none() {
+            self.messages = page.messages;
+            self.cursor = None;
+            return;
+        }
+        let start = self
+            .messages
+            .iter()
+            .position(|m| m.id == first.id)
+            .unwrap_or_else(|| {
+                self.messages.partition_point(|m| {
+                    (m.sent_at, m.id.as_str()) < (first.sent_at, first.id.as_str())
+                })
+            });
+        self.messages.truncate(start);
+        self.messages.extend(page.messages);
+        // A recent page's cursor skips the older messages we kept above.
+        if start == 0 {
+            self.cursor = page.next_cursor;
+        }
+    }
+
     pub fn prepend(&mut self, page: qmsg_types::HistoryPage) {
         let mut older = page.messages;
         older.retain(|m| !self.messages.iter().any(|current| current.id == m.id));
@@ -97,6 +125,51 @@ impl Timeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refresh_replaces_edited_messages_and_removes_deletions_in_recent_page() {
+        let channel = ChannelRef::new(None, "test");
+        let message = |id: &str, time, body: &str| {
+            Message::new(
+                id,
+                channel.clone(),
+                "me",
+                time,
+                vec![qmsg_types::Content::Text(body.into())],
+            )
+        };
+        let mut timeline = Timeline {
+            messages: vec![
+                message("1", 1, "older"),
+                message("2", 2, "before edit"),
+                message("3", 3, "deleted"),
+            ],
+            cursor: Some("older".into()),
+        };
+        timeline.refresh(qmsg_types::HistoryPage {
+            messages: vec![message("2", 2, "edited"), message("4", 4, "new")],
+            next_cursor: Some("recent".into()),
+        });
+        assert_eq!(
+            timeline
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1", "2", "4"]
+        );
+        assert_eq!(
+            timeline.messages[1].content,
+            vec![qmsg_types::Content::Text("edited".into())]
+        );
+        assert_eq!(timeline.cursor.as_deref(), Some("older"));
+        timeline.refresh(qmsg_types::HistoryPage {
+            messages: vec![],
+            next_cursor: None,
+        });
+        assert!(timeline.messages.is_empty());
+        assert!(timeline.cursor.is_none());
+    }
+
     #[test]
     fn overlapping_older_pages_keep_current_message_version() {
         let channel = ChannelRef::new(None, "test");

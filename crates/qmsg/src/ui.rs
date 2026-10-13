@@ -10,7 +10,6 @@ use tokio::sync::mpsc::Sender;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const BG: Color = Color::from_rgba(19, 22, 31, 255);
 const PANEL: Color = Color::from_rgba(25, 29, 40, 255);
 const INK: Color = Color::from_rgba(220, 225, 239, 255);
 const MUTED: Color = Color::from_rgba(137, 148, 172, 255);
@@ -117,10 +116,10 @@ impl State {
             }
             Update::LoginDone => {
                 self.login_busy = false;
-                self.status = "Sign-in step complete".into();
+                self.status.clear();
                 self.queue(tx, Request::Refresh);
             }
-            Update::Connected => self.status = "Connected · refreshing every 3 seconds".into(),
+            Update::Connected => self.status.clear(),
             Update::Error(error) => {
                 self.login_busy = false;
                 self.status = error;
@@ -155,7 +154,7 @@ impl State {
             Update::Sent(target) => {
                 self.drafts.remove(&Self::draft_key(&target));
                 self.pending = None;
-                self.status = "Message sent".into();
+                self.status.clear();
                 self.queue(tx, Request::Refresh);
             }
             Update::SendFailed(_target, error) => {
@@ -334,7 +333,11 @@ impl State {
     }
     pub fn view(&self, size: TerminalSize) -> Vec<Node> {
         let (w, h) = (size.cols, size.rows);
-        let mut nodes = vec![Container::new().style(Style::new().background(BG)).into()];
+        let mut nodes = vec![
+            Container::new()
+                .style(Style::new().background(PANEL))
+                .into(),
+        ];
         if w < 60 || h < 16 {
             nodes.push(text(
                 "qmsg · terminal too small\nResize to at least 60 × 16. Ctrl+Q quits.",
@@ -343,32 +346,17 @@ impl State {
                 w.saturating_sub(2),
                 h.saturating_sub(2),
                 ACCENT,
-                BG,
+                PANEL,
             ));
             return nodes;
         }
-        nodes.push(text(
-            " qmsg  /  all your conversations",
-            0,
-            0,
-            w,
-            1,
-            ACCENT,
-            PANEL,
-        ));
-        let badge = if self.demo {
-            "DEMO · offline"
-        } else {
-            "TERMINAL"
-        };
-        nodes.push(text(badge, w.saturating_sub(17), 0, 16, 1, MUTED, PANEL));
         let left = if w >= 100 { 28 } else { 21 };
         let accounts_h = (self.providers.len() as u16 + 3).clamp(5, 9).min(h - 10);
         panel(
             &mut nodes,
             " Accounts ",
             0,
-            2,
+            0,
             left,
             accounts_h,
             self.focus == Focus::Accounts,
@@ -376,7 +364,7 @@ impl State {
         let visible = usize::from(accounts_h - 2);
         let start = self.account.saturating_sub(visible.saturating_sub(1));
         if self.providers.is_empty() {
-            nodes.push(text("No accounts yet", 2, 3, left - 4, 1, MUTED, PANEL));
+            nodes.push(text("No accounts yet", 2, 1, left - 4, 1, MUTED, PANEL));
         }
         for (row, (index, provider)) in self
             .providers
@@ -395,25 +383,25 @@ impl State {
             nodes.push(text(
                 &format!("{marker} {status} {}", provider.provider.name),
                 1,
-                3 + row as u16,
+                1 + row as u16,
                 left - 2,
                 1,
                 if index == self.account { ACCENT } else { INK },
                 if index == self.account { SELECT } else { PANEL },
             ));
         }
-        let channels_y = 2 + accounts_h;
+        let channels_y = accounts_h;
         panel(
             &mut nodes,
             " Channels ",
             0,
             channels_y,
             left,
-            h - channels_y - 2,
+            h - channels_y - 1,
             self.focus == Focus::Channels,
         );
         let rooms = self.rooms();
-        let visible = usize::from(h - channels_y - 4);
+        let visible = usize::from(h - channels_y - 3);
         let start = self.room.saturating_sub(visible.saturating_sub(1));
         if rooms.is_empty() {
             nodes.push(text(
@@ -447,20 +435,20 @@ impl State {
                 if index == self.room { SELECT } else { PANEL },
             ));
         }
-        let x = left + 1;
+        let x = left;
         let width = w - x;
         let selected = self.selected();
         let title = selected
             .as_ref()
             .map(|r| format!(" # {} / {} ", r.channel.name, r.group))
-            .unwrap_or_else(|| " Welcome to qmsg ".into());
+            .unwrap_or_else(|| " Messages ".into());
         panel(
             &mut nodes,
             &title,
             x,
-            2,
+            0,
             width,
-            h - 8,
+            h - 5,
             self.focus == Focus::Messages,
         );
         let content_w = width - 4;
@@ -532,9 +520,9 @@ impl State {
         }
         if lines.is_empty() {
             let empty = if selected.is_some() {
-                "No messages yet. Press Enter to write a message."
+                "No messages yet."
             } else {
-                "Choose an account and channel.\nManage accounts with the orchestrator or another paired client.\n\nTab moves between panes. F1 shows the keys."
+                "Select a channel."
             };
             lines.extend(
                 wrap(empty, content_w as usize)
@@ -542,7 +530,7 @@ impl State {
                     .map(|s| (s, MUTED)),
             );
         }
-        let rows = usize::from(h - 10);
+        let rows = usize::from(h - 7);
         let end = lines
             .len()
             .saturating_sub(self.scroll.min(lines.len().saturating_sub(rows)));
@@ -551,7 +539,7 @@ impl State {
             nodes.push(text(
                 line,
                 x + 2,
-                3 + row as u16,
+                1 + row as u16,
                 content_w,
                 1,
                 *color,
@@ -561,13 +549,13 @@ impl State {
         let composer_title = if self.pending.is_some() {
             " Sending… "
         } else {
-            " Message · Enter sends "
+            " Message "
         };
         panel(
             &mut nodes,
             composer_title,
             x,
-            h - 6,
+            h - 5,
             width,
             4,
             self.focus == Focus::Compose,
@@ -577,7 +565,7 @@ impl State {
             if self.focus == Focus::Compose {
                 "▏".to_string()
             } else {
-                "Press i to write…".to_string()
+                String::new()
             }
         } else {
             format!(
@@ -594,28 +582,28 @@ impl State {
         nodes.push(text(
             &wrapped[start..].join("\n"),
             x + 2,
-            h - 5,
+            h - 4,
             content_w,
             2,
             INK,
             PANEL,
         ));
         nodes.push(text(
-            &format!(" {}", self.status),
-            0,
-            h - 2,
-            w,
+            &self.status,
+            1,
+            h - 1,
+            w.saturating_sub(12),
             1,
             MUTED,
-            BG,
+            PANEL,
         ));
         nodes.push(text(
-            " Tab panes  ↑↓ select  i write  PgUp/PgDn history  Ctrl+L login  F1 help  Ctrl+Q quit",
-            0,
+            "F1 Help",
+            w.saturating_sub(8),
             h - 1,
-            w,
+            7,
             1,
-            ACCENT,
+            MUTED,
             PANEL,
         ));
         if self.help {

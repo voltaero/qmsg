@@ -144,23 +144,17 @@ fn demo_state() -> ui::State {
     let mut state = ui::State::default();
     state.demo = true;
     state.providers = vec![provider];
-    state.status = "Demo mode · no account or network needed".into();
+    state.status.clear();
     let channel = state.selected().unwrap().target.channel;
     for (index, (author, body)) in [
-        (
-            "Claudio",
-            "Welcome to qmsg. One place for your conversations.",
-        ),
+        ("Claudio", "I pushed the changes to the chat view."),
         (
             "Ana",
-            "The terminal layout is ready to try. Tab moves between the panes.",
+            "Looks good. The channel list is much easier to read now.",
         ),
-        (
-            "Claudio",
-            "Choose a channel, press i, and start typing. Your draft stays with that channel.",
-        ),
-        ("Ana", "Unicode works too: Olá, 世界 👋"),
-        ("Claudio", "F1 shows all the keys. This demo stays offline."),
+        ("Claudio", "I'll check the smaller terminal size next."),
+        ("Ana", "Olá, 世界 👋"),
+        ("Claudio", "The screenshots are in the pull request."),
     ]
     .iter()
     .enumerate()

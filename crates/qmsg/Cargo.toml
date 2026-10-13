@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "1"
-fxcode = { git = "https://github.com/IGN-Styly/fxcode", rev = "56525dd" }
+fxcode = { git = "https://github.com/IGN-Styly/fxcode", rev = "27431fc" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 qmsg-types.workspace = true
 serde.workspace = true

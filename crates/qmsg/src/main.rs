@@ -1,5 +1,6 @@
 mod client;
 mod input;
+mod media;
 mod model;
 mod ui;
 

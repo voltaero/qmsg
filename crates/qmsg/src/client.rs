@@ -103,7 +103,7 @@ pub fn load(path: &Path) -> Result<Credentials> {
     })?)
     .map_err(Into::into)
 }
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -212,14 +212,12 @@ pub enum Request {
     Refresh,
     Login(ProviderId, String),
     SubmitLogin(ProviderId, Function, Arguments),
-    #[allow(dead_code)]
     Media {
         key: String,
         media: Media,
         kind: media::Kind,
     },
     /// Blob ids the UI no longer needs. Best-effort.
-    #[allow(dead_code)]
     Release(Vec<String>),
 }
 #[derive(Clone)]
@@ -266,7 +264,6 @@ pub enum Update {
     Connected,
     LoginForm(ProviderId, Function),
     LoginDone,
-    #[allow(dead_code)]
     Media(String, Result<media::Loaded, String>),
 }
 #[derive(Clone)]

@@ -1,4 +1,6 @@
-use qmsg_types::{Channel, ChannelKind, ChannelRef, Message, ProviderStatus, User};
+use qmsg_types::{
+    Channel, ChannelKind, ChannelRef, Media, MediaSource, Message, ProviderStatus, User,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -18,6 +20,8 @@ pub struct Scope {
 pub struct Organization {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub icon: Option<Box<Media>>,
     pub scope: Scope,
 }
 #[derive(Clone, Deserialize)]
@@ -30,6 +34,32 @@ pub struct Provider {
 #[derive(Default, Deserialize)]
 pub struct Snapshot {
     pub providers: Vec<Provider>,
+}
+impl Snapshot {
+    /// Blob handles for icons and avatars, which the terminal does not show.
+    pub fn blob_ids(&self) -> Vec<String> {
+        let mut media: Vec<&Media> = vec![];
+        for provider in &self.providers {
+            let scopes = provider
+                .standalone
+                .iter()
+                .chain(provider.organizations.iter().map(|o| {
+                    media.extend(o.icon.as_deref());
+                    &o.scope
+                }));
+            for scope in scopes.collect::<Vec<_>>() {
+                media.extend(scope.users.values().filter_map(|u| u.avatar.as_deref()));
+                media.extend(scope.channels.values().filter_map(|c| c.icon.as_deref()));
+            }
+        }
+        media
+            .into_iter()
+            .filter_map(|m| match &m.source {
+                MediaSource::Blob(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {

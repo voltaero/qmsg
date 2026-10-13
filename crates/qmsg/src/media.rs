@@ -12,10 +12,10 @@ pub const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_VIDEO_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 16384;
 pub const MAX_PIXELS: u64 = 40_000_000;
-pub const MAX_SIDE: u32 = 2048;
+pub const MAX_SIDE: u32 = 1600;
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 pub const MAX_REDIRECTS: usize = 3;
-pub const CACHE_BYTES: usize = 64 * 1024 * 1024;
+pub const CACHE_BYTES: usize = 96 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -40,7 +40,6 @@ fn mime_kind(mime: Option<&str>) -> Option<Kind> {
     }
 }
 
-#[allow(dead_code)]
 pub fn kind(content: &Content) -> Option<(Kind, &Media)> {
     match content {
         Content::Image(media) => match mime_kind(media.mime.as_deref()) {
@@ -72,7 +71,6 @@ pub fn check(media: &Media, kind: Kind, now_ms: u64) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn blob_ids(message: &Message) -> impl Iterator<Item = &str> {
     message.content.iter().filter_map(|content| match content {
         Content::Image(media)
@@ -86,7 +84,6 @@ pub fn blob_ids(message: &Message) -> impl Iterator<Item = &str> {
     })
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Loaded {
     Image(fxcode::Image),
@@ -122,7 +119,6 @@ impl VideoFile {
             .write_all(bytes)?;
         Ok(file)
     }
-    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -199,7 +195,6 @@ pub fn load(bytes: &[u8], mime: Option<&str>, kind: Kind) -> Result<Loaded, Stri
 }
 
 /// Loads inline media without a backend, as in demo mode.
-#[allow(dead_code)]
 pub fn load_local(media: &Media, kind: Kind) -> Result<Loaded, String> {
     match &media.source {
         MediaSource::Bytes(bytes) => load(bytes, media.mime.as_deref(), kind),
@@ -293,7 +288,6 @@ pub async fn fetch_url(http: &reqwest::Client, url: &str, limit: u64) -> Result<
 }
 
 /// Decoded images, least recently used first out, within [`CACHE_BYTES`].
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct Cache {
     entries: HashMap<String, (fxcode::Image, u64)>,
@@ -301,7 +295,6 @@ pub struct Cache {
     tick: u64,
     bytes: usize,
 }
-#[allow(dead_code)]
 impl Cache {
     pub fn get(&mut self, key: &str) -> Option<&fxcode::Image> {
         let (image, used) = self.entries.get_mut(key)?;
@@ -332,12 +325,6 @@ impl Cache {
         self.bytes += size;
         self.order.insert(self.tick, key.clone());
         self.entries.insert(key, (image, self.tick));
-    }
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 }
 fn image_bytes(image: &fxcode::Image) -> usize {
@@ -422,7 +409,7 @@ mod tests {
     #[test]
     fn downscales_large_images() {
         let image = decode_image(&encode(4096, 1024, ImageFormat::Png)).unwrap();
-        assert_eq!(image.dimensions(), Some((2048, 512)));
+        assert_eq!(image.dimensions(), Some((1600, 400)));
     }
 
     #[test]
@@ -521,15 +508,15 @@ mod tests {
             fxcode::Image::from_rgba(side, side, vec![0; (side * side * 4) as usize]).unwrap()
         };
         let mut cache = Cache::default();
-        cache.insert("a".into(), image(2048));
-        cache.insert("b".into(), image(2048));
-        cache.insert("c".into(), image(2048));
-        cache.insert("d".into(), image(2048));
-        assert!(cache.get("a").is_some());
+        let full = CACHE_BYTES / (2048 * 2048 * 4);
+        for key in 0..full {
+            cache.insert(key.to_string(), image(2048));
+        }
+        assert!(cache.get("0").is_some());
         cache.insert("e".into(), image(16));
-        assert_eq!(cache.len(), 4);
-        assert!(cache.get("b").is_none());
-        assert!(cache.get("a").is_some() && cache.get("e").is_some());
+        assert_eq!(cache.entries.len(), full);
+        assert!(cache.get("1").is_none());
+        assert!(cache.get("0").is_some() && cache.get("e").is_some());
         assert!(cache.bytes <= CACHE_BYTES);
     }
 

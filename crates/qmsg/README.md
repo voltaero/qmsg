@@ -73,6 +73,26 @@ Press `i` to write; Esc or `;q` returns to normal mode and keeps the draft.
 Moving through a list only highlights a row, as in tuicord; Enter opens it.
 Channels sit under their categories, and threads under their channels.
 
+## Images and video
+
+In kitty, Ghostty, or WezTerm, images on screen show inline, up to 64 × 12
+cells. In the message pane, `o` opens the selected message's image or video
+full screen, and `p` plays its video; without a selected message, they use the
+newest message that has media. In the viewer, Space pauses, ← / → seek five
+seconds (or move between a message's images), `r` replays, and `q` or Esc closes.
+Other terminals show attachment names and download nothing. Spoilers stay
+hidden until opened.
+
+Media loads only when on screen or opened, at most four at a time, matching
+the backend's read quota. Public URLs download without credentials, over HTTPS
+only (plain HTTP only on loopback), with at most three redirects. Expired links
+wait for the next refresh. Backend blobs are read in 256 KiB chunks and
+released afterwards; handles for media the app does not show, such as avatars,
+are released right away. Downloads stop at 25 MiB for images and 64 MiB for
+videos. Images must stay within 16384 px a side and 40 megapixels, and decoded
+images share a 96 MiB cache. A video plays from an owner-only temporary file,
+deleted when the viewer closes. Video plays through libmpv.
+
 Drafts stay with each channel for the current session. Sending holds the
 submitted message until the result arrives; you can keep writing the next draft.
 A rejected send puts its text back before that new draft. If delivery is unknown,
@@ -86,8 +106,8 @@ saved to disk. Providers with more complex input types need another client.
 
 The directory and latest history refresh every three seconds. While reading
 older messages, the visible history stays still; return to the bottom to see
-new messages. Times show UTC. This first version sends text and shows text,
-reply references, and attachment names. Account setup, attachments, reactions,
+new messages. Times show UTC. This version sends text and shows text, reply
+references, images, and video. Account setup, sending attachments, reactions,
 editing, and deletion still use the host or another client. It does not render
 HTML or execute terminal escape sequences from messages.
 

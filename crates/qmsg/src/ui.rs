@@ -1,10 +1,17 @@
 use crate::{
     client::{Request, Requests, Update},
+    media::{self, Kind, Loaded},
     model::{Group, Provider, Room, Target, Timeline},
 };
-use fxcode::{Border, Color, Container, Node, Style, TerminalSize, Text};
-use qmsg_types::{ChannelKind, ChannelRef, Content, Message, ProviderStatus, User};
-use std::{cell::Cell, collections::HashMap};
+use fxcode::{Border, Color, Container, ImageFit, Node, Style, TerminalSize, Text, Video};
+use qmsg_types::{
+    ChannelKind, ChannelRef, Content, Media, MediaSource, Message, ProviderStatus, User,
+};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use termion::event::Key;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -20,19 +27,24 @@ const FIELD_LIMIT: usize = 16 * 1024;
 const QUERY_LIMIT: usize = 256;
 /// Messages from one author closer together than this share a header.
 const GROUP_MS: u64 = 7 * 60_000;
+/// Media loads in flight at once, matching the backend's per-device read quota.
+const MEDIA_LOADS: usize = 4;
+/// Inline images fit in this many cells, as in tuicord.
+const IMAGE_COLS: usize = 64;
+const IMAGE_ROWS: usize = 12;
 const HELP: &[(&str, &str)] = &[
     ("Tab / Shift+Tab", "Next / previous panel"),
     ("h / l, H / L", "Previous / next panel"),
     ("j / k", "Move in lists; scroll messages"),
-    ("↓ / ↑", "Move in lists; step messages"),
-    ("J / K", "Next / previous message"),
+    ("↓ / ↑, J / K", "Move in lists; step messages"),
     ("Enter", "Open server, channel or account"),
     ("gg / G", "Oldest loaded / newest messages"),
     ("PgUp / PgDn", "Scroll a page; older history loads"),
-    ("i", "Write a message (insert mode)"),
-    ("Esc / ;q", "Leave insert mode; the draft stays"),
+    ("i / Esc / ;q", "Insert / normal mode"),
     ("Enter / Alt+Enter", "Send / new line"),
     ("Ctrl+K / +", "Quick switch channels"),
+    ("o / p · q", "Open media / play video · close"),
+    ("Space ← → r", "Video: pause / seek 5 s / replay"),
     ("Ctrl+R / Ctrl+L", "Refresh / sign in"),
     ("F1 / Ctrl+Q", "Toggle this help / quit"),
 ];
@@ -62,6 +74,21 @@ struct Frame {
     rows: usize,
     members: bool,
     accounts: bool,
+    size: TerminalSize,
+    /// Timeline messages on screen, as a range.
+    visible: (usize, usize),
+}
+/// Media opened full screen with `o` or `p`.
+struct Viewer {
+    key: String,
+    kind: Kind,
+    name: String,
+    message: String,
+    /// Which media of the message, among its images and videos.
+    index: usize,
+    video: Option<Video>,
+    /// Keeps the downloaded video until the viewer closes.
+    file: Option<Arc<media::VideoFile>>,
 }
 struct Switcher {
     query: String,
@@ -74,6 +101,8 @@ struct Line {
     extra: Option<(String, Color)>,
     /// The timeline message this line belongs to.
     message: Option<usize>,
+    /// An inline image starting here: its media key, columns and rows.
+    image: Option<(String, u16, u16)>,
 }
 impl Line {
     fn plain(text: String, color: Color, message: Option<usize>) -> Self {
@@ -82,6 +111,7 @@ impl Line {
             color,
             extra: None,
             message,
+            image: None,
         }
     }
 }
@@ -113,6 +143,18 @@ pub struct State {
     login: Option<LoginForm>,
     login_busy: bool,
     switcher: Option<Switcher>,
+    /// The terminal shows Kitty graphics, so images and video can play.
+    pub graphics: bool,
+    images: RefCell<media::Cache>,
+    /// Media keys being loaded, with the blob each one reads.
+    loading: HashMap<String, Option<String>>,
+    /// Blobs the backend already released after a load read them.
+    consumed: HashSet<String>,
+    /// Inline images loaded since the channel opened. They are not fetched
+    /// again after the cache drops them, so a full cache cannot loop.
+    loaded: HashSet<String>,
+    failed: HashMap<String, String>,
+    viewer: Option<Viewer>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -138,6 +180,13 @@ impl Default for State {
             login: None,
             login_busy: false,
             switcher: None,
+            graphics: false,
+            images: RefCell::new(media::Cache::default()),
+            loading: HashMap::new(),
+            consumed: HashSet::new(),
+            loaded: HashSet::new(),
+            failed: HashMap::new(),
+            viewer: None,
         }
     }
 }
@@ -183,7 +232,13 @@ impl State {
         users
     }
     fn select(&mut self, tx: &Requests) {
+        let old = blobs(&self.timeline.messages);
         self.timeline = Timeline::default();
+        self.release(old, tx);
+        self.consumed.clear();
+        self.loaded.clear();
+        self.failed.clear();
+        self.viewer = None;
         self.scroll = 0;
         self.max_scroll.set(0);
         self.focused = None;
@@ -298,6 +353,7 @@ impl State {
                     .groups()
                     .get(self.server)
                     .map(|g| g.organization.map(str::to_owned));
+                self.release(snapshot.blob_ids().into_iter().collect(), tx);
                 self.providers = snapshot.providers;
                 let found = account
                     .and_then(|name| self.providers.iter().position(|p| p.provider.name == name));
@@ -326,16 +382,26 @@ impl State {
                 }
             }
             Update::History(target, page, older) => {
+                let before = blobs(&self.timeline.messages);
+                let mut unused = HashSet::new();
                 if self.target() == Some(target) {
                     if older {
                         self.timeline.prepend(page);
                         self.loading_older = false;
                     } else if self.scroll == 0 {
                         self.timeline.refresh(page);
+                    } else {
+                        unused = blobs(&page.messages);
                     }
+                } else {
+                    unused = blobs(&page.messages);
                 }
+                let shown = blobs(&self.timeline.messages);
+                unused.extend(before.difference(&shown).cloned());
+                // Prepending drops overlapping copies, whose handles would leak.
+                self.release(unused.difference(&shown).cloned().collect(), tx);
             }
-            Update::Media(..) => {}
+            Update::Media(key, result) => self.loaded_media(key, result),
             Update::Sent(target) => {
                 if self.pending.as_ref().is_some_and(|(t, _)| *t == target) {
                     self.pending = None;
@@ -427,6 +493,10 @@ impl State {
         }
         if self.switcher.is_some() {
             self.switcher_key(key, tx);
+            return true;
+        }
+        if self.viewer.is_some() {
+            self.viewer_key(key);
             return true;
         }
         let g = std::mem::take(&mut self.pending_g);
@@ -538,6 +608,8 @@ impl State {
                 self.scroll = self.max_scroll.get();
                 self.older(tx);
             }
+            Key::Char('o') => self.open_media(false),
+            Key::Char('p') => self.open_media(true),
             _ => {}
         }
     }
@@ -708,6 +780,305 @@ impl State {
             _ => {}
         }
     }
+    /// Identifies a message's media across refreshes, which change blob ids.
+    fn media_key(&self, message: &Message, index: usize) -> String {
+        let account = self
+            .providers
+            .get(self.account)
+            .map_or("", |p| p.provider.name.as_str());
+        let channel = &message.channel;
+        format!(
+            "{account}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{index}",
+            channel.organization.as_deref().unwrap_or(""),
+            channel.channel,
+            message.id
+        )
+    }
+    fn media_label(&self, message: &Message, index: usize, content: &Content) -> String {
+        let label = attachment(content);
+        let Some((kind, media)) = media::kind(content) else {
+            return label;
+        };
+        if media.metadata.spoiler {
+            return match kind {
+                Kind::Image => "[spoiler image]".into(),
+                Kind::Video => "[spoiler video]".into(),
+            };
+        }
+        let key = self.media_key(message, index);
+        if let Some(error) = self.failed.get(&key) {
+            format!("{label} · {error}")
+        } else if media::expired(media, crate::client::now()) {
+            format!("{label} · link expired")
+        } else if self.loading.contains_key(&key) {
+            format!("{label} · loading…")
+        } else if kind == Kind::Video && self.graphics {
+            format!("▶ {label}")
+        } else {
+            label
+        }
+    }
+    /// Gives blob handles back, except those a load is still reading.
+    fn release(&mut self, ids: HashSet<String>, tx: &Requests) {
+        let reading: HashSet<&String> = self.loading.values().flatten().collect();
+        let ids: Vec<String> = ids
+            .into_iter()
+            .filter(|id| !reading.contains(id) && !self.consumed.remove(id))
+            .collect();
+        if !self.demo && !ids.is_empty() {
+            // Unreleased handles expire on their own, so a full queue is fine.
+            let _ = tx.try_send(Request::Release(ids));
+        }
+    }
+    fn loaded_media(&mut self, key: String, result: Result<Loaded, String>) {
+        if let Some(Some(blob)) = self.loading.remove(&key) {
+            self.consumed.insert(blob);
+        }
+        let viewing = self.viewer.as_ref().is_some_and(|v| v.key == key);
+        let error = match result {
+            Ok(Loaded::Image(image)) => {
+                self.loaded.insert(key.clone());
+                self.images.get_mut().insert(key, image);
+                return;
+            }
+            Ok(Loaded::Video(file)) if viewing => match Video::from_path(file.path()) {
+                Ok(video) => {
+                    let viewer = self.viewer.as_mut().unwrap();
+                    viewer.video = Some(video);
+                    viewer.file = Some(file);
+                    return;
+                }
+                Err(_) => "Could not open video".into(),
+            },
+            Ok(Loaded::Video(_)) => return,
+            Err(error) => error,
+        };
+        if self.failed.len() >= 256 {
+            self.failed.clear();
+        }
+        self.failed.insert(key, error);
+    }
+    /// Starts loads for the open viewer and for images on screen. Returns
+    /// whether anything started, so labels can show it.
+    pub fn tick(&mut self, tx: &Requests) -> bool {
+        if !self.graphics {
+            return false;
+        }
+        let idle = |key: &String| !self.loading.contains_key(key) && !self.failed.contains_key(key);
+        let mut wanted = vec![];
+        if let Some(viewer) = &self.viewer
+            && idle(&viewer.key)
+            && match viewer.kind {
+                Kind::Image => self.images.borrow_mut().get(&viewer.key).is_none(),
+                Kind::Video => viewer.file.is_none(),
+            }
+            && let Some(message) = self
+                .timeline
+                .messages
+                .iter()
+                .find(|m| m.id == viewer.message)
+            && let Some(&(part, kind)) = media_parts(message).get(viewer.index)
+            && let Some((_, media)) = media::kind(&message.content[part])
+        {
+            wanted.push((viewer.key.clone(), media.clone(), kind));
+        }
+        let now = crate::client::now();
+        let (start, end) = self.frame.get().visible;
+        let end = end.min(self.timeline.messages.len());
+        for message in &self.timeline.messages[start.min(end)..end] {
+            for (index, part) in message.content.iter().enumerate() {
+                // Expired links wait for a refresh to bring a new one.
+                if let Some((Kind::Image, media)) = media::kind(part)
+                    && !media.metadata.spoiler
+                    && !media::expired(media, now)
+                {
+                    let key = self.media_key(message, index);
+                    if idle(&key) && !self.loaded.contains(&key) {
+                        wanted.push((key, media.clone(), Kind::Image));
+                    }
+                }
+            }
+        }
+        let mut started = false;
+        for (key, media, kind) in wanted {
+            if self.loading.len() >= MEDIA_LOADS {
+                break;
+            }
+            started = true;
+            if self.demo {
+                self.loading.insert(key.clone(), None);
+                self.loaded_media(key, media::load_local(&media, kind));
+                continue;
+            }
+            let blob = match &media.source {
+                MediaSource::Blob(id) => Some(id.clone()),
+                _ => None,
+            };
+            if tx
+                .try_send(Request::Media {
+                    key: key.clone(),
+                    media,
+                    kind,
+                })
+                .is_ok()
+            {
+                self.loading.insert(key, blob);
+            }
+        }
+        started
+    }
+    /// Closes a video the player could not continue.
+    pub fn stop_video(&mut self, error: &std::io::Error) {
+        self.viewer = None;
+        self.status = format!("Video stopped: {error}");
+    }
+    /// Whether a video is playing, so the caller keeps drawing its frames.
+    pub fn playing(&self) -> bool {
+        self.viewer.as_ref().is_some_and(|v| v.video.is_some())
+    }
+    /// `o` opens the focused message's first media; `p` its first video. With
+    /// no focused message, the newest message that has one.
+    fn open_media(&mut self, video: bool) {
+        let messages = &self.timeline.messages;
+        let focused = self
+            .focused
+            .as_ref()
+            .and_then(|id| messages.iter().position(|m| m.id == *id));
+        let candidates: Vec<usize> = match focused {
+            Some(index) => vec![index],
+            None => (0..messages.len()).rev().collect(),
+        };
+        let found = candidates.into_iter().find_map(|message| {
+            let index = media_parts(&messages[message])
+                .iter()
+                .position(|(_, kind)| !video || *kind == Kind::Video)?;
+            Some((message, index))
+        });
+        let Some((message, index)) = found else {
+            self.status = if video {
+                "No video in this message".into()
+            } else {
+                "No image or video in this message".into()
+            };
+            return;
+        };
+        if !self.graphics {
+            self.status = "Images and video need kitty, Ghostty or WezTerm".into();
+            return;
+        }
+        self.show(message, index);
+    }
+    fn show(&mut self, message: usize, index: usize) {
+        let message = &self.timeline.messages[message];
+        let (part, kind) = media_parts(message)[index];
+        let key = self.media_key(message, part);
+        let name = match media::kind(&message.content[part]) {
+            Some((
+                _,
+                Media {
+                    name: Some(name), ..
+                },
+            )) => name.clone(),
+            _ if kind == Kind::Video => "Video".into(),
+            _ => "Image".into(),
+        };
+        // Opening again retries a failed load.
+        self.failed.remove(&key);
+        self.viewer = Some(Viewer {
+            key,
+            kind,
+            name,
+            message: message.id.clone(),
+            index,
+            video: None,
+            file: None,
+        });
+    }
+    fn viewer_key(&mut self, key: Key) {
+        let viewer = self.viewer.as_ref().unwrap();
+        let video = viewer.video.as_ref();
+        let step = match key {
+            Key::Esc | Key::Char('q' | 'o' | 'p') => {
+                self.viewer = None;
+                return;
+            }
+            Key::Char(' ') => {
+                video.inspect(|v| v.toggle_pause());
+                return;
+            }
+            Key::Char('r') => {
+                if let Some(video) = video {
+                    video.controls().seek_to(0.0);
+                    video.play();
+                }
+                return;
+            }
+            Key::Left | Key::Char('h') => -1,
+            Key::Right | Key::Char('l') => 1,
+            _ => return,
+        };
+        match video {
+            Some(video) if step < 0 => video.seek_backward(),
+            Some(video) => video.seek_forward(),
+            // Arrows move between a message's images.
+            None if viewer.kind == Kind::Image => {
+                let Some(message) = self
+                    .timeline
+                    .messages
+                    .iter()
+                    .position(|m| m.id == viewer.message)
+                else {
+                    return;
+                };
+                let count = media_parts(&self.timeline.messages[message]).len();
+                let next = viewer.index as isize + step;
+                if (0..count as isize).contains(&next) {
+                    self.show(message, next as usize);
+                }
+            }
+            None => {}
+        }
+    }
+    fn view_media(&self, nodes: &mut Vec<Node>, viewer: &Viewer, w: u16, h: u16) {
+        let mut border = Border::plain(ACCENT)
+            .title(format!(" {} ", viewer.name))
+            .title_color(ACCENT);
+        if let Some(video) = &viewer.video {
+            border = border.media_controls(video.controls());
+        }
+        nodes.push(
+            Container::new()
+                .style(
+                    Style::new()
+                        .offset(1, 0)
+                        .width(w - 2)
+                        .height(h)
+                        .background(PANEL)
+                        .border(border),
+                )
+                .into(),
+        );
+        let area = Style::new().offset(2, 1).width(w - 4).height(h - 2);
+        let node: Option<Node> = match (&viewer.video, viewer.kind) {
+            (Some(video), _) => Some(video.clone().fit(ImageFit::Contain).style(area).into()),
+            (None, Kind::Image) => self
+                .images
+                .borrow_mut()
+                .get(&viewer.key)
+                .map(|image| image.clone().fit(ImageFit::Contain).style(area).into()),
+            (None, Kind::Video) => None,
+        };
+        match node {
+            Some(node) => nodes.push(node),
+            None => {
+                let status = self
+                    .failed
+                    .get(&viewer.key)
+                    .map_or("Loading…", String::as_str);
+                nodes.push(text(status, 3, 1, w - 6, 1, MUTED, PANEL));
+            }
+        }
+    }
     fn send(&mut self, tx: &Requests) {
         let Some(room) = self.selected() else {
             return;
@@ -817,6 +1188,7 @@ impl State {
                     .next()
                     .unwrap_or_default();
                 lines.push(Line {
+                    image: None,
                     text: author,
                     color: ACCENT,
                     extra: Some((
@@ -835,19 +1207,44 @@ impl State {
                     message: Some(index),
                 });
             }
-            for part in &message.content {
+            for (part_index, part) in message.content.iter().enumerate() {
                 let (body, color) = match part {
                     Content::Text(s) => (s.clone(), INK),
                     Content::Formatted(s) => (s.text.clone(), INK),
-                    other => (attachment(other), MUTED),
+                    other => (self.media_label(message, part_index, other), MUTED),
                 };
-                for line in wrap(&body, width) {
-                    lines.push(Line {
-                        text: line,
-                        color,
-                        extra: None,
-                        message: Some(index),
+                let image = media::kind(part)
+                    .filter(|(kind, media)| {
+                        *kind == Kind::Image && self.graphics && !media.metadata.spoiler
+                    })
+                    .and_then(|(_, media)| {
+                        let key = self.media_key(message, part_index);
+                        let size = self
+                            .images
+                            .borrow_mut()
+                            .get(&key)
+                            .and_then(|image| image.dimensions())
+                            .or(media.metadata.width.zip(media.metadata.height))?;
+                        let (cols, rows) = fit(
+                            size,
+                            width.min(IMAGE_COLS),
+                            IMAGE_ROWS,
+                            self.frame.get().size,
+                        );
+                        Some((key, cols, rows))
                     });
+                if let Some((key, cols, rows)) = image {
+                    lines.push(Line {
+                        image: Some((key, cols, rows)),
+                        ..Line::plain(body, color, Some(index))
+                    });
+                    for _ in 1..rows {
+                        lines.push(Line::plain(String::new(), color, Some(index)));
+                    }
+                    continue;
+                }
+                for line in wrap(&body, width) {
+                    lines.push(Line::plain(line, color, Some(index)));
                 }
             }
         }
@@ -971,13 +1368,15 @@ impl State {
         );
         let content_w = chat_w - 4;
         let rows = usize::from(chat_h - 2);
-        let lines = self.lines(selected.as_ref(), usize::from(content_w));
         self.frame.set(Frame {
             width: usize::from(content_w),
             rows,
             members: members_w > 0,
             accounts: accounts_w > 0,
+            size,
+            ..self.frame.get()
         });
+        let lines = self.lines(selected.as_ref(), usize::from(content_w));
         self.max_scroll.set(lines.len().saturating_sub(rows));
         let end = lines.len() - self.scroll.min(self.max_scroll.get());
         let start = end.saturating_sub(rows);
@@ -985,13 +1384,45 @@ impl State {
             .focused
             .as_ref()
             .and_then(|id| self.timeline.messages.iter().position(|m| m.id == *id));
-        for (row, line) in lines[start..end].iter().enumerate() {
+        let window = &lines[start..end];
+        let mut frame = self.frame.get();
+        frame.visible = (
+            window.iter().find_map(|l| l.message).unwrap_or(0),
+            window
+                .iter()
+                .rev()
+                .find_map(|l| l.message)
+                .map_or(0, |m| m + 1),
+        );
+        self.frame.set(frame);
+        // Kitty images draw over text, so overlays hide them.
+        let overlay =
+            self.help || self.switcher.is_some() || self.login.is_some() || self.viewer.is_some();
+        for (row, line) in window.iter().enumerate() {
             let bg = if focused.is_some() && line.message == focused {
                 SELECT
             } else {
                 PANEL
             };
             let y = 1 + row as u16;
+            let image = line
+                .image
+                .as_ref()
+                .filter(|(_, _, rows)| !overlay && row + usize::from(*rows) <= window.len())
+                .and_then(|(key, cols, rows)| {
+                    let image = self.images.borrow_mut().get(key)?.clone();
+                    Some((image, *cols, *rows))
+                });
+            if let Some((image, cols, rows)) = image {
+                nodes.push(text("", chat_x + 1, y, content_w + 2, 1, line.color, bg));
+                nodes.push(
+                    image
+                        .fit(ImageFit::Contain)
+                        .style(Style::new().offset(chat_x + 2, y).width(cols).height(rows))
+                        .into(),
+                );
+                continue;
+            }
             nodes.push(text(
                 &format!(" {}", line.text),
                 chat_x + 1,
@@ -1134,6 +1565,9 @@ impl State {
             );
         }
 
+        if let Some(viewer) = &self.viewer {
+            self.view_media(&mut nodes, viewer, w, h);
+        }
         if self.help {
             let mw = 62.min(w - 4);
             let mh = (HELP.len() as u16 + 2).min(h);
@@ -1297,6 +1731,40 @@ fn nth_selectable(rows: &[(String, Color, bool)], n: usize) -> usize {
         .filter(|(_, r)| r.2)
         .nth(n)
         .map_or(0, |(i, _)| i)
+}
+/// Content indices of a message's images and videos.
+fn media_parts(message: &Message) -> Vec<(usize, Kind)> {
+    message
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, part)| media::kind(part).map(|(kind, _)| (index, kind)))
+        .collect()
+}
+fn blobs(messages: &[Message]) -> HashSet<String> {
+    messages
+        .iter()
+        .flat_map(media::blob_ids)
+        .map(str::to_owned)
+        .collect()
+}
+/// The cells an image of `size` pixels takes, never enlarged.
+fn fit(size: (u32, u32), cols: usize, rows: usize, terminal: TerminalSize) -> (u16, u16) {
+    let cell = |pixels: u16, cells: u16, fallback| {
+        if pixels > 0 && cells > 0 {
+            f64::from(pixels) / f64::from(cells)
+        } else {
+            fallback
+        }
+    };
+    let (cols, rows) = (cols.max(1) as f64, rows.max(1) as f64);
+    let width = f64::from(size.0.max(1)) / cell(terminal.pixel_width, terminal.cols, 8.0);
+    let height = f64::from(size.1.max(1)) / cell(terminal.pixel_height, terminal.rows, 16.0);
+    let scale = (cols / width).min(rows / height).min(1.0);
+    (
+        (width * scale).ceil().clamp(1.0, cols) as u16,
+        (height * scale).ceil().clamp(1.0, rows) as u16,
+    )
 }
 fn glyph(kind: &ChannelKind) -> &'static str {
     match kind {
@@ -1538,7 +2006,7 @@ mod tests {
         demo_state,
         model::Snapshot,
     };
-    use qmsg_types::{HistoryPage, Message};
+    use qmsg_types::HistoryPage;
 
     /// Sends each character as a key; Esc is `\x1b`.
     fn press(state: &mut State, tx: &Requests, keys: &str) {
@@ -2019,6 +2487,313 @@ mod tests {
         }
         state.key(Key::Char('x'), &tx);
         assert!(!state.help);
+    }
+
+    fn picture(source: MediaSource, width: u32, height: u32) -> Media {
+        let mut media = Media {
+            name: Some("picture.png".into()),
+            mime: Some("image/png".into()),
+            size: None,
+            source,
+            metadata: Default::default(),
+        };
+        media.metadata.width = Some(width);
+        media.metadata.height = Some(height);
+        media
+    }
+
+    fn with_media(state: &mut State, sources: Vec<Content>) {
+        let channel = state.selected().unwrap().target.channel;
+        state.timeline.messages = sources
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| {
+                Message::new(
+                    i.to_string(),
+                    channel.clone(),
+                    "Ana",
+                    i as u64,
+                    vec![content],
+                )
+            })
+            .collect();
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::Receiver<Request>) -> (Vec<(String, Media)>, Vec<String>) {
+        let (mut loads, mut released) = (vec![], vec![]);
+        while let Ok(request) = rx.try_recv() {
+            match request {
+                Request::Media { key, media, .. } => loads.push((key, media)),
+                Request::Release(ids) => released.extend(ids),
+                _ => {}
+            }
+        }
+        (loads, released)
+    }
+
+    fn rgba() -> fxcode::Image {
+        fxcode::Image::from_rgba(2, 2, vec![0; 16]).unwrap()
+    }
+
+    #[test]
+    fn visible_images_load_four_at_a_time_and_never_loop() {
+        let mut state = live();
+        state.graphics = true;
+        let (tx, mut rx, _selection) = requests(16);
+        let images = (0..6)
+            .map(|i| {
+                Content::Image(picture(
+                    MediaSource::Url(format!("https://cdn.test/{i}.png")),
+                    40,
+                    20,
+                ))
+            })
+            .collect();
+        with_media(&mut state, images);
+        state.view(size(100, 60));
+        assert!(state.tick(&tx));
+        let (loads, _) = drain(&mut rx);
+        assert_eq!(loads.len(), MEDIA_LOADS);
+        assert!(!state.tick(&tx), "the quota is full");
+        state.update(
+            Update::Media(loads[0].0.clone(), Ok(Loaded::Image(rgba()))),
+            &tx,
+        );
+        state.update(
+            Update::Media(loads[1].0.clone(), Err("Download failed".into())),
+            &tx,
+        );
+        state.tick(&tx);
+        let (more, _) = drain(&mut rx);
+        assert_eq!(more.len(), 2);
+        assert!(
+            more.iter()
+                .all(|(key, _)| loads.iter().all(|(old, _)| old != key))
+        );
+        assert!(format!("{:?}", state.view(size(100, 60))).contains("Download failed"));
+        // An image the cache dropped stays a placeholder instead of loading again.
+        state.images = RefCell::new(media::Cache::default());
+        for (key, _) in loads.iter().skip(2).chain(&more) {
+            state.update(Update::Media(key.clone(), Ok(Loaded::Image(rgba()))), &tx);
+        }
+        state.images = RefCell::new(media::Cache::default());
+        state.view(size(100, 60));
+        assert!(!state.tick(&tx));
+    }
+
+    #[test]
+    fn expired_links_wait_for_a_refreshed_message() {
+        let mut state = live();
+        state.graphics = true;
+        let (tx, mut rx, _selection) = requests(16);
+        let target = state.selected().unwrap().target;
+        let link = |expires| {
+            let mut media = picture(
+                MediaSource::Url("https://cdn.test/a.png?ex=1".into()),
+                40,
+                20,
+            );
+            media.metadata.expires_at_ms = Some(expires);
+            Content::Image(media)
+        };
+        with_media(&mut state, vec![link(1)]);
+        assert!(format!("{:?}", state.view(size(100, 30))).contains("link expired"));
+        assert!(!state.tick(&tx));
+        let page = HistoryPage {
+            messages: vec![Message::new(
+                "0",
+                target.channel.clone(),
+                "Ana",
+                0,
+                vec![link(u64::MAX)],
+            )],
+            next_cursor: None,
+        };
+        state.update(Update::History(target, page, false), &tx);
+        state.view(size(100, 30));
+        assert!(state.tick(&tx));
+        assert_eq!(drain(&mut rx).0.len(), 1);
+    }
+
+    #[test]
+    fn terminals_without_graphics_show_names_and_load_nothing() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(16);
+        with_media(
+            &mut state,
+            vec![Content::Image(picture(
+                MediaSource::Url("https://cdn.test/a.png".into()),
+                40,
+                20,
+            ))],
+        );
+        let tree = format!("{:?}", state.view(size(100, 30)));
+        assert!(tree.contains("[image: picture.png]"));
+        assert!(!state.tick(&tx));
+        state.focus = Focus::Messages;
+        state.key(Key::Char('o'), &tx);
+        assert!(state.viewer.is_none());
+        assert!(state.status.contains("need kitty"));
+        assert!(drain(&mut rx).0.is_empty());
+    }
+
+    #[test]
+    fn blobs_are_released_when_unused_but_never_while_read() {
+        let mut state = live();
+        state.graphics = true;
+        let (tx, mut rx, _selection) = requests(16);
+        let target = state.selected().unwrap().target;
+        let blob = |id: &str| Content::Image(picture(MediaSource::Blob(id.into()), 40, 20));
+        with_media(&mut state, vec![blob("a")]);
+        state.view(size(100, 30));
+        state.tick(&tx);
+        assert_eq!(drain(&mut rx).0.len(), 1);
+        let page = |id: &str| HistoryPage {
+            messages: vec![Message::new(
+                "0",
+                target.channel.clone(),
+                "Ana",
+                0,
+                vec![blob(id)],
+            )],
+            next_cursor: None,
+        };
+        state.update(Update::History(target.clone(), page("b"), false), &tx);
+        assert!(drain(&mut rx).1.is_empty(), "a is still being read");
+        let key = state.media_key(&state.timeline.messages[0], 0);
+        state.update(Update::Media(key, Ok(Loaded::Image(rgba()))), &tx);
+        state.update(Update::History(target.clone(), page("c"), false), &tx);
+        assert_eq!(
+            drain(&mut rx).1,
+            ["b"],
+            "the backend released a after reading it"
+        );
+        let mut other = target.clone();
+        other.channel.channel = "random".into();
+        state.update(Update::History(other, page("d"), false), &tx);
+        assert_eq!(drain(&mut rx).1, ["d"]);
+        state.key(Key::Char('j'), &tx);
+        state.key(Key::Char('\n'), &tx);
+        assert_eq!(
+            drain(&mut rx).1,
+            ["c"],
+            "leaving the channel releases its blobs"
+        );
+        // A finished read on screen is not released a second time.
+        let target = state.selected().unwrap().target;
+        with_media(&mut state, vec![blob("x")]);
+        state.view(size(100, 30));
+        state.tick(&tx);
+        let (loads, _) = drain(&mut rx);
+        state.update(
+            Update::Media(loads[0].0.clone(), Ok(Loaded::Image(rgba()))),
+            &tx,
+        );
+        state.update(Update::History(target, page("y"), false), &tx);
+        assert!(drain(&mut rx).1.is_empty());
+    }
+
+    #[test]
+    fn snapshot_icons_and_avatars_are_released() {
+        let mut state = live();
+        let (tx, mut rx, _selection) = requests(16);
+        let mut providers = state.providers.clone();
+        providers[0].organizations[0].icon =
+            Some(Box::new(picture(MediaSource::Blob("icon".into()), 1, 1)));
+        providers[0].organizations[0].scope.users.insert(
+            "Ana".into(),
+            User {
+                id: "Ana".into(),
+                name: "Ana".into(),
+                username: None,
+                avatar: Some(Box::new(picture(MediaSource::Blob("avatar".into()), 1, 1))),
+            },
+        );
+        state.update(Update::Snapshot(Snapshot { providers }), &tx);
+        let mut released = drain(&mut rx).1;
+        released.sort();
+        assert_eq!(released, ["avatar", "icon"]);
+    }
+
+    #[test]
+    fn viewer_plays_the_focused_video_and_deletes_it_on_close() {
+        let mut state = live();
+        state.graphics = true;
+        let (tx, mut rx, _selection) = requests(16);
+        let mut clip = picture(MediaSource::Url("https://cdn.test/clip.mp4".into()), 64, 36);
+        clip.mime = Some("video/mp4".into());
+        with_media(
+            &mut state,
+            vec![Content::Video(clip), Content::Text("no media".into())],
+        );
+        state.view(size(100, 30));
+        state.focus = Focus::Messages;
+        press(&mut state, &tx, "K");
+        state.key(Key::Char('p'), &tx);
+        assert_eq!(state.status, "No video in this message");
+        press(&mut state, &tx, "Kp");
+        assert!(state.viewer.is_some() && !state.playing());
+        state.tick(&tx);
+        let (loads, _) = drain(&mut rx);
+        assert_eq!(loads.len(), 1);
+        let file =
+            Arc::new(media::VideoFile::create(b"not really a video", Some("video/mp4")).unwrap());
+        let path = file.path().to_owned();
+        state.update(
+            Update::Media(loads[0].0.clone(), Ok(Loaded::Video(file))),
+            &tx,
+        );
+        assert!(state.playing());
+        state.view(size(100, 30));
+        state.key(Key::Char(' '), &tx);
+        assert!(
+            state
+                .viewer
+                .as_ref()
+                .unwrap()
+                .video
+                .as_ref()
+                .unwrap()
+                .is_paused()
+        );
+        state.key(Key::Char('q'), &tx);
+        assert!(state.viewer.is_none() && !path.exists());
+    }
+
+    #[test]
+    fn inline_images_reserve_rows_from_their_dimensions() {
+        let mut state = live();
+        state.graphics = true;
+        with_media(
+            &mut state,
+            vec![Content::Image(picture(
+                MediaSource::Url("https://cdn.test/a.png".into()),
+                800,
+                450,
+            ))],
+        );
+        state.frame.set(Frame {
+            size: TerminalSize {
+                cols: 100,
+                rows: 40,
+                pixel_width: 1000,
+                pixel_height: 800,
+            },
+            ..Frame::default()
+        });
+        let lines = state.lines(state.selected().as_ref(), 60);
+        let (index, (_, cols, rows)) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(i, l)| l.image.clone().map(|image| (i, image)))
+            .unwrap();
+        assert_eq!((cols, rows), (43, 12));
+        assert_eq!(lines.len(), index + 12);
+        assert_eq!(
+            fit((4, 4), 60, 12, TerminalSize::default()),
+            (1, 1),
+            "small images stay small"
+        );
     }
 
     #[test]

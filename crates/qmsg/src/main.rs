@@ -97,7 +97,8 @@ fn terminal(
         }
     }
     let mut size = TerminalSize::current()?;
-    let mut terminal = Terminal(Renderer::with_kitty(output, size, KittyMode::Disabled));
+    let mut terminal = Terminal(Renderer::with_kitty(output, size, KittyMode::Auto));
+    state.graphics = terminal.0.kitty_supported();
     let (keys, input) = mpsc::channel();
     std::thread::spawn(move || input::read(io::stdin(), keys));
     let mut dirty = true;
@@ -113,10 +114,26 @@ fn terminal(
             dirty = true;
         }
         if dirty {
-            terminal.0.draw(&state.view(size))?;
-            dirty = false;
+            // A video that fails to play closes; any other drawing error ends the app.
+            match terminal.0.draw(&state.view(size)) {
+                Err(error) if state.playing() => {
+                    state.stop_video(&error);
+                    continue;
+                }
+                result => result?,
+            }
+            dirty = state.tick(&requests);
         }
-        match input.recv_timeout(Duration::from_millis(50)) {
+        let wait = if state.playing() {
+            if let Err(error) = terminal.0.draw_video_frames() {
+                state.stop_video(&error);
+                dirty = true;
+            }
+            Duration::from_millis(8)
+        } else {
+            Duration::from_millis(50)
+        };
+        match input.recv_timeout(wait) {
             Ok(key) => {
                 match key? {
                     input::Input::Key(key) => {
@@ -169,6 +186,7 @@ fn demo_state() -> ui::State {
         organizations: vec![model::Organization {
             id: "qmsg".into(),
             name: "qmsg space".into(),
+            icon: None,
             scope,
         }],
         standalone: None,
@@ -199,5 +217,49 @@ fn demo_state() -> ui::State {
             vec![Content::Text((*body).into())],
         ));
     }
+    state.timeline.messages.push(Message::new(
+        "sketch",
+        channel,
+        "Ana",
+        (9 * 60 + 47) * 60_000,
+        vec![
+            Content::Text("Sunset palette for the theme:".into()),
+            Content::Image(demo_image()),
+        ],
+    ));
     state
+}
+/// A generated picture, so the demo shows media without a network.
+fn demo_image() -> qmsg_types::Media {
+    let (width, height) = (480, 270);
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| {
+        let sun = (x as f32 - 240.0).hypot(y as f32 - 190.0) < 60.0;
+        let sky = y as f32 / height as f32;
+        if sun && y < 200 {
+            image::Rgba([255, 214, 120, 255])
+        } else if y >= 200 {
+            image::Rgba([40, 52, 92, 255])
+        } else {
+            image::Rgba([
+                (250.0 - 90.0 * sky) as u8,
+                (120.0 + 30.0 * sky) as u8,
+                (110.0 + 80.0 * sky) as u8,
+                255,
+            ])
+        }
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    picture
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("encoding an in-memory PNG cannot fail");
+    let mut media = qmsg_types::Media {
+        name: Some("sunset.png".into()),
+        mime: Some("image/png".into()),
+        size: None,
+        source: qmsg_types::MediaSource::Bytes(png.into_inner()),
+        metadata: Default::default(),
+    };
+    media.metadata.width = Some(width);
+    media.metadata.height = Some(height);
+    media
 }

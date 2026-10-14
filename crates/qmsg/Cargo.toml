@@ -15,7 +15,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tonic = { version = "0.14", features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost = "0.14"
 prost = "0.14"
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["ring", "http1", "http2", "tls12"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+http-body-util = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 uuid = { version = "1", features = ["v4"] }

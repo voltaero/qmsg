@@ -374,7 +374,7 @@ impl Client {
     }
     async fn load_media(
         mut self,
-        http: Result<reqwest::Client, String>,
+        http: Result<media::Http, String>,
         media: Media,
         kind: media::Kind,
     ) -> Result<media::Loaded, String> {

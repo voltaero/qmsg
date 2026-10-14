@@ -1,3 +1,10 @@
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
+use hyper_rustls::HttpsConnector;
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
 use qmsg_types::{Content, Media, MediaSource, Message};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -202,7 +209,7 @@ pub fn load_local(media: &Media, kind: Kind) -> Result<Loaded, String> {
     }
 }
 
-fn allowed(url: &reqwest::Url) -> bool {
+fn allowed(url: &url::Url) -> bool {
     let loopback = match url.host() {
         Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -215,7 +222,10 @@ fn allowed(url: &reqwest::Url) -> bool {
 }
 
 /// A client for public media downloads: no cookies, credentials or referer.
-pub fn http_client() -> Result<reqwest::Client, String> {
+#[derive(Clone)]
+pub struct Http(Client<HttpsConnector<HttpConnector>, Empty<Bytes>>);
+
+pub fn http_client() -> Result<Http, String> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
@@ -226,65 +236,83 @@ pub fn http_client() -> Result<reqwest::Client, String> {
     .map_err(|_| "Could not set up TLS")?
     .with_root_certificates(roots)
     .with_no_client_auth();
-    reqwest::Client::builder()
-        .tls_backend_preconfigured(tls)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() > MAX_REDIRECTS {
-                attempt.error("too many redirects")
-            } else if !allowed(attempt.url()) {
-                attempt.error("insecure redirect")
-            } else {
-                attempt.follow()
-            }
-        }))
-        .referer(false)
-        .timeout(TIMEOUT)
-        .connect_timeout(TIMEOUT)
-        .user_agent("qmsg")
-        .build()
-        .map_err(|_| "Could not set up downloads".into())
+    let mut tcp = HttpConnector::new();
+    tcp.enforce_http(false);
+    tcp.set_connect_timeout(Some(TIMEOUT));
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(tcp);
+    Ok(Http(Client::builder(TokioExecutor::new()).build(https)))
+}
+
+/// Downloads at most `limit` bytes, following up to [`MAX_REDIRECTS`] checked redirects.
+pub async fn fetch_url(http: &Http, url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(TIMEOUT, fetch(http, url, limit))
+        .await
+        .map_err(|_| "Download timed out".to_string())?
 }
 
 // Messages never include the URL: signed query strings are secrets.
-fn download_error(error: reqwest::Error) -> String {
-    let error = error.without_url();
-    if error.is_timeout() {
-        "Download timed out".into()
-    } else if error.is_redirect() {
-        "Download redirected too often or to an insecure address".into()
-    } else if error.is_connect() {
-        "Could not connect to media server".into()
-    } else {
-        "Download failed".into()
-    }
-}
-
-pub async fn fetch_url(http: &reqwest::Client, url: &str, limit: u64) -> Result<Vec<u8>, String> {
-    let url = reqwest::Url::parse(url).map_err(|_| "Invalid media link")?;
-    if !allowed(&url) {
-        return Err("Media link must use HTTPS".into());
-    }
-    let mut response = http.get(url).send().await.map_err(download_error)?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Download failed: HTTP {}",
-            response.status().as_u16()
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit)
-    {
-        return Err(too_large(limit));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(download_error)? {
-        if (body.len() + chunk.len()) as u64 > limit {
+async fn fetch(http: &Http, url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut url = url::Url::parse(url).map_err(|_| "Invalid media link")?;
+    for redirect in 0.. {
+        if !allowed(&url) {
+            return Err(if redirect == 0 {
+                "Media link must use HTTPS".into()
+            } else {
+                "Download redirected to an insecure address".into()
+            });
+        }
+        let request = hyper::Request::get(url.as_str())
+            .header(hyper::header::USER_AGENT, "qmsg")
+            .body(Empty::new())
+            .map_err(|_| "Invalid media link")?;
+        let response = http
+            .0
+            .request(request)
+            .await
+            .map_err(|_| "Could not connect to media server")?;
+        let status = response.status();
+        if status.is_redirection() {
+            let next = response
+                .headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|l| l.to_str().ok())
+                .and_then(|l| url.join(l).ok())
+                .ok_or("Download failed")?;
+            if redirect == MAX_REDIRECTS {
+                return Err("Download redirected too often".into());
+            }
+            url = next;
+            continue;
+        }
+        if !status.is_success() {
+            return Err(format!("Download failed: HTTP {}", status.as_u16()));
+        }
+        let length = response
+            .headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|l| l.to_str().ok()?.parse::<u64>().ok());
+        if length.is_some_and(|length| length > limit) {
             return Err(too_large(limit));
         }
-        body.extend_from_slice(&chunk);
+        let mut body = response.into_body();
+        let mut data = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| "Download failed")?;
+            if let Ok(chunk) = frame.into_data() {
+                if (data.len() + chunk.len()) as u64 > limit {
+                    return Err(too_large(limit));
+                }
+                data.extend_from_slice(&chunk);
+            }
+        }
+        return Ok(data);
     }
-    Ok(body)
+    unreachable!()
 }
 
 /// Decoded images, least recently used first out, within [`CACHE_BYTES`].
@@ -541,6 +569,31 @@ mod tests {
             format!("HTTP/1.1 {status}\r\nConnection: close\r\n{headers}\r\n").into_bytes();
         response.extend_from_slice(body);
         response
+    }
+
+    #[tokio::test]
+    async fn follows_at_most_three_checked_redirects() {
+        let http = http_client().unwrap();
+        let hop = |path: &str| {
+            response(
+                "302 Found",
+                &format!("Location: {path}\r\nContent-Length: 0\r\n"),
+                b"",
+            )
+        };
+        let ok = response("200 OK", "Content-Length: 2\r\n", b"ok");
+        let base = serve(vec![hop("/1"), hop("/2"), hop("/3"), ok.clone()]).await;
+        assert_eq!(
+            fetch_url(&http, &format!("{base}/0"), 10).await.unwrap(),
+            b"ok"
+        );
+        let base = serve(vec![hop("/1"), hop("/2"), hop("/3"), hop("/4"), ok]).await;
+        assert_eq!(
+            fetch_url(&http, &format!("{base}/0"), 10)
+                .await
+                .unwrap_err(),
+            "Download redirected too often"
+        );
     }
 
     #[tokio::test]

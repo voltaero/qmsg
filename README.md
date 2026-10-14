@@ -5,7 +5,7 @@ This Cargo workspace contains:
 
 | Crate | Output | Purpose |
 | --- | --- | --- |
-| `crates/qmsg` | `qmsg` binary | Main app |
+| `crates/qmsg` | `qmsg` binary | [Terminal chat app](crates/qmsg/README.md) |
 | `crates/qmsg-orchestrator` | `qmsg-orchestrator` binary | Runs providers with wasmtime |
 | `crates/qmsg-sdk` | `qmsg_sdk` library | What providers are built with |
 | `crates/qmsg-types` | `qmsg_types` library | Types shared by the orchestrator and providers |
@@ -14,6 +14,11 @@ This Cargo workspace contains:
 | `providers/discord` | `.wasm` component (Go) | Discord user accounts, with ningen |
 | `providers/email` | `.wasm` component (Go) | IMAP/SMTP and Gmail OAuth; [setup](providers/email/README.md) |
 | `services/browser-login` | Bun service | Host-side browser logins |
+
+## Terminal app
+
+Run `cargo run -p qmsg -- --demo` for an offline preview. See the
+[terminal app guide](crates/qmsg/README.md) for pairing, provider sign-in, and keys.
 
 ## Native app backend
 

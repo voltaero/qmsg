@@ -166,15 +166,7 @@ pub async fn pair(file: &Path, path: &Path) -> Result<()> {
         token: String::new(),
         certificate_pem: pairing.certificate_pem,
     };
-    let mut client = connect(&credentials).await?;
-    let reply = client
-        .pair(wire::PairRequest {
-            code: pairing.code,
-            device_name: "qmsg terminal".into(),
-        })
-        .await?
-        .into_inner();
-    credentials.token = reply.token;
+    // Open the device file first so a write failure cannot spend the one-time code.
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
@@ -185,10 +177,27 @@ pub async fn pair(file: &Path, path: &Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
+    let mut device = options.open(path)?;
+    let reply = async {
+        let mut client = connect(&credentials).await?;
+        let request = wire::PairRequest {
+            code: pairing.code,
+            device_name: "qmsg terminal".into(),
+        };
+        anyhow::Ok(client.pair(request).await?.into_inner())
+    }
+    .await;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(error) => {
+            drop(device);
+            let _ = std::fs::remove_file(path);
+            return Err(error);
+        }
+    };
+    credentials.token = reply.token;
     use std::io::Write;
-    options
-        .open(path)?
-        .write_all(&serde_json::to_vec_pretty(&credentials)?)?;
+    device.write_all(&serde_json::to_vec_pretty(&credentials)?)?;
     Ok(())
 }
 pub enum Request {
@@ -435,6 +444,52 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn pairing_file(name: &str, endpoint: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qmsg-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("pairing.json");
+        let pairing = serde_json::json!({
+            "version": 1,
+            "endpoint": endpoint,
+            "code": "code",
+            "expires_at_ms": now() + 60_000,
+        });
+        std::fs::write(&file, pairing.to_string()).unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn unwritable_device_file_fails_before_spending_the_code() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let file = pairing_file("unwritable", &endpoint);
+        // The parent of the device path is a regular file, so it cannot be created.
+        let path = file.join("device.json");
+        let paired = tokio::time::timeout(Duration::from_secs(5), pair(&file, &path)).await;
+        assert!(paired.expect("pairing waited on the server").is_err());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "pairing contacted the server before the device file was writable"
+        );
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_pairing_removes_the_empty_device_file() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let file = pairing_file("refused", &format!("http://127.0.0.1:{port}"));
+        let path = file.with_file_name("nested").join("device.json");
+        assert!(pair(&file, &path).await.is_err());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn newest_selection_survives_a_full_action_queue() {
         let (tx, mut actions, mut selected) = requests(1);

@@ -24,9 +24,9 @@ const HELP: &[(&str, &str)] = &[
     ("Tab / Shift+Tab", "Next / previous panel"),
     ("h / l, H / L", "Previous / next panel"),
     ("j / k", "Move in lists; scroll messages"),
-    ("↓ / ↑", "Move in lists; next / previous message"),
+    ("↓ / ↑", "Move in lists; step messages"),
     ("J / K", "Next / previous message"),
-    ("Enter", "Open the server, channel or account"),
+    ("Enter", "Open server, channel or account"),
     ("gg / G", "Oldest loaded / newest messages"),
     ("PgUp / PgDn", "Scroll a page; older history loads"),
     ("i", "Write a message (insert mode)"),
@@ -1139,7 +1139,7 @@ impl State {
             let mx = (w - mw) / 2;
             let my = (h - mh) / 2;
             panel(&mut nodes, " Keyboard help ", mx, my, mw, mh, true);
-            let body: Vec<String> = HELP.iter().map(|(k, v)| format!("{k:<19}{v}")).collect();
+            let body: Vec<String> = HELP.iter().map(|(k, v)| format!("{k:<18}{v}")).collect();
             nodes.push(text(
                 &body.join("\n"),
                 mx + 2,
@@ -2002,9 +2002,19 @@ mod tests {
         let mut state = demo_state();
         let (tx, _rx, _selection) = requests(8);
         state.key(Key::F(1), &tx);
-        let tree = format!("{:?}", state.view(size(60, 16)));
-        for (keys, _) in HELP {
-            assert!(tree.contains(keys), "{keys} is missing");
+        let nodes = state.view(size(60, 16));
+        let body = nodes
+            .iter()
+            .find_map(|node| match node {
+                Node::Text(t) if t.content.starts_with(HELP[0].0) => Some(t),
+                _ => None,
+            })
+            .expect("help text is drawn");
+        let (w, h) = (body.style.width.unwrap(), body.style.height.unwrap());
+        assert_eq!(body.content.lines().count(), HELP.len());
+        assert!(HELP.len() <= usize::from(h), "{} rows in {h}", HELP.len());
+        for line in body.content.lines() {
+            assert!(line.width() <= usize::from(w), "{line:?} is wider than {w}");
         }
         state.key(Key::Char('x'), &tx);
         assert!(!state.help);

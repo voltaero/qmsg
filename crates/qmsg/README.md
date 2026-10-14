@@ -53,7 +53,8 @@ Press `i` to write; Esc or `;q` returns to normal mode and keeps the draft.
 
 | Key | Action |
 | --- | --- |
-| Tab / Shift+Tab, h / l, H / L | Previous / next panel |
+| Tab / Shift+Tab | Next / previous panel |
+| h / l, H / L | Previous / next panel |
 | j / k, ↓ / ↑ | Move in a list; Enter opens the server, channel, or account |
 | j / k in messages | Scroll a line |
 | J / K, ↓ / ↑ in messages | Next / previous message |

@@ -1,8 +1,9 @@
 # Native app API
 
-The orchestrator serves `qmsg.app.v1.App` over gRPC. Native desktop and mobile
-clients generate bindings from [app.proto](proto/app.proto). No app UI lives in
-this change. Provider WASM uses the existing ABI 3; rebuild Rust and Go providers
+The orchestrator serves `qmsg.app.v1.App` over gRPC, and over gRPC-Web for
+browsers on the same port. Native desktop and mobile clients generate bindings
+from [app.proto](proto/app.proto); the [web app](../../apps/web/README.md) uses
+gRPC-Web. Provider WASM uses the existing ABI 3; rebuild Rust and Go providers
 when changing its types during development.
 
 The protobuf envelope carries JSON for qmsg domain data. This keeps function
@@ -41,6 +42,17 @@ Browser-based provider login is a separate connection. To use it from another
 machine, set `browser.port` and `browser.viewer_url` and forward its `/view/`
 path through your LAN TLS proxy or tunnel. Never forward `/sessions`. See the
 browser service README. The login link is a short-lived browser capability.
+
+### Browsers
+
+The listener also accepts HTTP/1.1, so a browser can call the API with
+gRPC-Web in binary mode (`application/grpc-web+proto`). gRPC-Web has no
+streaming requests, so a browser sends an `Upload` as one request body with all
+of its frames; the limits above still apply to each frame. Set `app.web_dir` to
+a built web app to serve it at the same origin. A page on another origin needs
+that origin in `app.web_origins`, such as `["https://chat.example.com"]`.
+Origins are exact: scheme, host and port, without a path. Requests carry the
+device token in the `authorization` header, never in cookies.
 
 ## Pairing and device tokens
 
@@ -225,8 +237,8 @@ function discovery states which edits are supported.
 
 ## Scope and limits
 
-This endpoint targets native apps over a LAN or secure tunnel. It does not add
-an app UI, gRPC-Web adapter, push notifications, media transcoding or a server
+This endpoint targets native apps over a LAN or secure tunnel, and browsers
+through gRPC-Web. It does not add push notifications, media transcoding or a server
 message-search index. Those can be separate app needs after the native client
 uses the API. Provider-specific features remain typed functions or custom
 content rather than silent omissions.

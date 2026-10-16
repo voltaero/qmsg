@@ -30,6 +30,11 @@ pub struct Config {
     pub endpoint: Option<String>,
     pub certificate: Option<PathBuf>,
     pub private_key: Option<PathBuf>,
+    /// Origins of web apps served elsewhere that may call the API, such as
+    /// `http://localhost:5173`. The API itself always speaks gRPC-Web.
+    pub web_origins: Vec<String>,
+    /// A built web app (`apps/web/dist`) to serve beside the API.
+    pub web_dir: Option<PathBuf>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -38,6 +43,8 @@ impl Default for Config {
             endpoint: None,
             certificate: None,
             private_key: None,
+            web_origins: Vec::new(),
+            web_dir: None,
         }
     }
 }
@@ -161,6 +168,8 @@ impl Service {
     pub async fn serve(self, config: Config) -> anyhow::Result<()> {
         config.validate()?;
         let mut server = tonic::transport::Server::builder()
+            // Browsers reach the API with gRPC-Web, over HTTP/1.1 without TLS.
+            .accept_http1(true)
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .concurrency_limit_per_connection(32)
@@ -180,12 +189,32 @@ impl Service {
             ),
         }
         tracing::info!(listen=%config.listen,"app gRPC API listening");
-        server
-            .add_service(
+        use tower::Layer as _;
+        // Only the API speaks gRPC-Web: the layer refuses other HTTP/1.1
+        // requests, such as for the web app's files.
+        let mut routes = tonic::service::Routes::new(
+            tonic_web::GrpcWebLayer::new().layer(
                 AppServer::new(self)
                     .max_decoding_message_size(1024 * 1024)
                     .max_encoding_message_size(8 * 1024 * 1024),
-            )
+            ),
+        )
+        .into_axum_router();
+        if let Some(dir) = &config.web_dir {
+            anyhow::ensure!(
+                dir.join("index.html").is_file(),
+                "app.web_dir has no index.html; build the web app first"
+            );
+            tracing::info!(dir=%dir.display(),"serving the web app");
+            // Client-side routes fall back to the app's page.
+            routes = routes.fallback_service(
+                tower_http::services::ServeDir::new(dir)
+                    .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
+            );
+        }
+        server
+            .layer(web_cors(&config.web_origins)?)
+            .add_routes(routes.into())
             .serve(config.listen)
             .await?;
         Ok(())
@@ -689,6 +718,32 @@ impl App for Service {
         Ok(Response::new(wire::Empty {}))
     }
 }
+/// Lets the configured web origins call the API from another origin. Bearer
+/// tokens travel in a header, never in cookies, so no credentials mode.
+fn web_cors(origins: &[String]) -> anyhow::Result<tower_http::cors::CorsLayer> {
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+    let origins = origins
+        .iter()
+        .map(|o| o.parse())
+        .collect::<Result<Vec<axum::http::HeaderValue>, _>>()?;
+    let header = |name: &'static str| axum::http::HeaderName::from_static(name);
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([axum::http::Method::POST])
+        .allow_headers([
+            header("authorization"),
+            header("content-type"),
+            header("x-grpc-web"),
+            header("x-user-agent"),
+            header("grpc-timeout"),
+        ])
+        .expose_headers([
+            header("grpc-status"),
+            header("grpc-message"),
+            header("grpc-status-details-bin"),
+        ])
+        .max_age(Duration::from_secs(600)))
+}
 /// Mint a pairing grant through the local CLI, never through an unauthenticated RPC.
 pub fn pairing(data_dir: &Path, config: &Config) -> anyhow::Result<String> {
     config.validate()?;
@@ -804,6 +859,15 @@ impl Config {
             anyhow::ensure!(
                 url.scheme() == "https" || (url.scheme() == "http" && loopback),
                 "pairing endpoint requires HTTPS, except localhost inside a secure tunnel"
+            );
+        }
+        for origin in &self.web_origins {
+            let url = reqwest::Url::parse(origin)
+                .with_context(|| format!("app.web_origins: {origin:?} is not a URL"))?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.origin().ascii_serialization() == *origin,
+                "app.web_origins: {origin:?} must be an origin such as https://host:port, without a path"
             );
         }
         Ok(())
@@ -967,6 +1031,21 @@ mod tests {
         assert!(c.validate().is_err());
         c.endpoint = Some("https://host/path".into());
         assert!(c.validate().is_err());
+        c.endpoint = None;
+        c.web_origins = vec![
+            "http://localhost:5173".into(),
+            "https://qmsg.example.com".into(),
+        ];
+        assert!(c.validate().is_ok());
+        for bad in [
+            "https://qmsg.example.com/",
+            "https://h/app",
+            "localhost:5173",
+            "file:///x",
+        ] {
+            c.web_origins = vec![bad.into()];
+            assert!(c.validate().is_err(), "{bad}");
+        }
     }
     #[test]
     fn identity_pairing_and_schema() {

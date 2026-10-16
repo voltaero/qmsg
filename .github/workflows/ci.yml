@@ -46,3 +46,16 @@ jobs:
       - name: Install terminal media library
         run: sudo apt-get update && sudo apt-get install -y libmpv-dev
       - run: cargo test
+
+  web:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: bun run build

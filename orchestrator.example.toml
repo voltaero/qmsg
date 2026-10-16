@@ -31,6 +31,10 @@ listen = "127.0.0.1:50051"
 # endpoint = "https://qmsg.local:50051"
 # certificate = ".qmsg/app-cert.pem"
 # private_key = ".qmsg/app-key.pem"
+# Serve the built web app (apps/web) at this address, beside the API:
+# web_dir = "apps/web/dist"
+# Origins of web apps hosted elsewhere that may call the API:
+# web_origins = ["http://localhost:5173"]
 
 [[provider]]
 name = "echo"

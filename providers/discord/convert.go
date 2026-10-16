@@ -200,8 +200,22 @@ func attachment(a discord.Attachment) qmsg.Content {
 		preview := string(a.Proxy)
 		if u, err := url.Parse(preview); err == nil && strings.HasPrefix(a.ContentType, "image/") && u.Hostname() == "media.discordapp.net" {
 			query := u.Query()
-			query.Set("width", "512")
-			query.Set("height", "512")
+			// Discord crops when both requested dimensions have another ratio.
+			// Bound the longest edge and keep the attachment's proportions.
+			if a.Width > 0 && a.Height > 0 {
+				width, height := 512, 512
+				if a.Width >= a.Height {
+					height = max(1, int(512*int64(a.Height)/int64(a.Width)))
+				} else {
+					width = max(1, int(512*int64(a.Width)/int64(a.Height)))
+				}
+				query.Set("width", strconv.Itoa(width))
+				query.Set("height", strconv.Itoa(height))
+			} else {
+				// With no dimensions, one bound avoids guessing a crop ratio.
+				query.Set("width", "512")
+				query.Del("height")
+			}
 			query.Set("format", "webp")
 			u.RawQuery = query.Encode()
 			preview = u.String()

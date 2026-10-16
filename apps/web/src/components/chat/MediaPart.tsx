@@ -63,7 +63,7 @@ function ImagePart({ media, local }: { media: Media; local?: string }) {
             src={src}
             alt={media.metadata?.description ?? media.name ?? ""}
             draggable={false}
-            className={cn("block size-full object-cover", !size && "max-h-80")}
+            className={cn("block size-full object-contain", !size && "max-h-80")}
           />
         </button>
       ) : (

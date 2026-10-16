@@ -29,14 +29,23 @@ export function ExternalLink({ href, children }: { href: string; children: React
   );
 }
 
-function Spoiler({ children }: { children: ReactNode }) {
+export function Spoiler({ children }: { children: ReactNode }) {
   const [shown, setShown] = useState(false);
   return (
     <span
+      role="button"
+      tabIndex={shown ? -1 : 0}
+      aria-label={shown ? "Spoiler revealed" : "Reveal spoiler"}
       onClick={() => setShown(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setShown(true);
+        }
+      }}
       className={cn("rounded px-0.5 transition-colors", shown ? "bg-accent" : "cursor-pointer bg-foreground text-transparent select-none [&_*]:invisible")}
     >
-      {children}
+      <span aria-hidden={!shown}>{children}</span>
     </span>
   );
 }

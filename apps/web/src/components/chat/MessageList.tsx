@@ -19,13 +19,14 @@ import { cn } from "~/lib/cn";
 import { customJson, customLabel, formatDay, formatLong, formatTime, mediaOf, plainText, sameDay, textOf } from "~/lib/content";
 import type { Conversation, PendingSend } from "~/store/conversation";
 import { userName, type ChannelKey } from "~/store/directory";
-import { call, discard, functions, loadOlder, retry, setReplyTo } from "~/store/store";
+import { call, discard, functions, loadOlder, retry, setReplyTo, useStore } from "~/store/store";
 import { toast } from "~/store/ui";
 import { Avatar } from "../Avatar";
 import { FunctionDialog } from "../FunctionDialog";
 import { Button, Menu, Spinner, Textarea, type MenuItem } from "../ui";
 import { safeUrl } from "~/store/media";
 import { ExternalLink, Formatted, Linkified } from "./Formatted";
+import { DiscordText } from "./DiscordText";
 import { MediaPart } from "./MediaPart";
 
 const QUICK = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "🔥"];
@@ -145,6 +146,7 @@ const MessageRow = memo(function MessageRow({
   /** The message this replies to: null when it isn't loaded. */
   replied?: Message | null;
 }) {
+  const providerType = useStore((s) => s.types[channelKey.provider]);
   const compact = grouped(message, previous);
   const newDay = !previous || !sameDay(previous.sent_at, message.sent_at);
   const author = scope?.users[message.author];
@@ -283,7 +285,7 @@ const MessageRow = memo(function MessageRow({
               }}
             />
           ) : (
-            <MessageBody content={message.content} scope={scope} edited={!!message.edited_at} />
+            <MessageBody content={message.content} scope={scope} providerType={providerType} edited={!!message.edited_at} />
           )}
           {message.reactions.length ? (
             <div className="mt-1 flex flex-wrap gap-1">
@@ -398,11 +400,11 @@ function ReplyQuote({ message, scope }: { message: Message | null; scope: Scope 
   );
 }
 
-export function MessageBody({ content, scope, edited, previews }: { content: Content[]; scope: Scope | undefined; edited?: boolean; previews?: Record<number, string> }) {
+export function MessageBody({ content, scope, edited, previews, providerType }: { content: Content[]; scope: Scope | undefined; providerType?: string; edited?: boolean; previews?: Record<number, string> }) {
   const textParts: ReactNode[] = [];
   const blocks: ReactNode[] = [];
   content.forEach((part, i) => {
-    if ("Text" in part) textParts.push(<Linkified key={i} text={part.Text} />);
+    if ("Text" in part) textParts.push(providerType === "discord" ? <DiscordText key={i} text={part.Text} scope={scope} /> : <Linkified key={i} text={part.Text} />);
     else if ("Formatted" in part) textParts.push(<Formatted key={i} value={part.Formatted} scope={scope} />);
     else if ("Custom" in part) blocks.push(<CustomPart key={i} kind={part.Custom.kind} data={part.Custom.data} />);
     else {
@@ -415,12 +417,11 @@ export function MessageBody({ content, scope, edited, previews }: { content: Con
       {textParts.length ? (
         <div className="text-[14px] leading-[1.45] break-words whitespace-pre-wrap text-foreground/95">
           {textParts.map((p, i) => (
-            <span key={i}>
-              {i ? "\n" : null}
+            <div key={i}>
               {p}
-            </span>
+              {edited && i === textParts.length - 1 ? <span className="ml-1 text-2xs text-muted-foreground">(edited)</span> : null}
+            </div>
           ))}
-          {edited ? <span className="ml-1 text-2xs text-muted-foreground">(edited)</span> : null}
         </div>
       ) : edited ? (
         <span className="text-2xs text-muted-foreground">(edited)</span>
@@ -455,12 +456,13 @@ function CustomPart({ kind, data }: { kind: string; data: number[] }) {
 }
 
 function PendingRow({ pending, channelKey, scope }: { pending: PendingSend; channelKey: ChannelKey; scope: Scope | undefined }) {
+  const providerType = useStore((s) => s.types[channelKey.provider]);
   const state = pending.state;
   return (
     <div className="group -mx-2 mt-1 flex gap-3 rounded-lg px-2 py-0.5">
       <div className="w-9 shrink-0" />
       <div className={cn("min-w-0 flex-1", state.kind === "sending" && "opacity-60")}>
-        <MessageBody content={pending.content} scope={scope} previews={pending.previews} />
+        <MessageBody content={pending.content} scope={scope} providerType={providerType} previews={pending.previews} />
         {state.kind === "sending" ? (
           <div className="mt-0.5 flex items-center gap-1 text-2xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" /> Sending…

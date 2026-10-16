@@ -59,6 +59,7 @@ the browser, over HTTPS unless it is on localhost.
   provider status stay live. Reloading the page reopens the linked conversation.
 - History pages as you scroll, de-duplicated with live events; edits,
   deletions, reactions, replies, typing and read markers.
+- Discord Markdown, code blocks, quotes, lists, links and click-to-reveal spoilers.
 - Sending text, mentions (Discord and echo) and files, with pending sends that
   can be retried or discarded and an honest "maybe sent" state.
 - Images, video, audio and files from public URLs or backend blobs, read in

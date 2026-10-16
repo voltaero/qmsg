@@ -35,11 +35,41 @@ func TestAttachmentPreviewDoesNotPointAtTheFullOriginal(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if u.Query().Get("width") != "512" || u.Query().Get("height") != "512" {
-		t.Fatal("image preview has no size bound")
+	if u.Query().Get("width") != "512" || u.Query().Get("height") != "384" {
+		t.Fatal("image preview must stay bounded and preserve the original aspect ratio")
 	}
 	if u.Query().Get("hm") != "signature" || m.Source.(qmsg.SourceURL).URL != original {
 		t.Fatal("preview modified the original or its signature")
+	}
+}
+
+func TestAttachmentPreviewAspectRatios(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		width, height         uint
+		wantWidth, wantHeight string
+	}{
+		{"landscape", 480, 240, "512", "256"},
+		{"portrait", 240, 480, "256", "512"},
+		{"square", 100, 100, "512", "512"},
+		{"thin", 10000, 1, "512", "1"},
+		{"unknown", 0, 0, "512", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := attachment(discord.Attachment{ContentType: "image/png", Proxy: "https://media.discordapp.net/attachments/1/2/image.png?ex=ffffffff&hm=signature&height=900", Width: tc.width, Height: tc.height})
+			m := c.(qmsg.ContentImage).Media
+			u, err := url.Parse(*m.Metadata.PreviewURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := u.Query()
+			if q.Get("width") != tc.wantWidth || q.Get("height") != tc.wantHeight {
+				t.Fatalf("preview dimensions = %sx%s; want %sx%s", q.Get("width"), q.Get("height"), tc.wantWidth, tc.wantHeight)
+			}
+			if q.Get("hm") != "signature" || q.Get("ex") != "ffffffff" {
+				t.Fatal("preview lost its signed parameters")
+			}
+		})
 	}
 }
 

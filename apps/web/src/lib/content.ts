@@ -1,3 +1,4 @@
+import { discordPreview } from "./discord";
 import { tag, type Content, type Email, type Media, type MediaKind, type Message } from "~/api/types";
 
 /** The kind of content a file is sent as, from its MIME type. */
@@ -41,9 +42,12 @@ export function textOf(content: Content): string | null {
 }
 
 /** A one-line summary of a message, for lists and notifications. */
-export function plainText(message: Message): string {
+export function plainText(message: Message, providerType?: string): string {
   if (message.email) return message.email.subject || "(no subject)";
-  const text = message.content.map(textOf).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const text = message.content.map((part) => {
+    const raw = textOf(part);
+    return raw && providerType === "discord" && "Text" in part ? discordPreview(raw) : raw;
+  }).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   if (text) return text;
   for (const part of message.content) {
     const m = mediaOf(part);

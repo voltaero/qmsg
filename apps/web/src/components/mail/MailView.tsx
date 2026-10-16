@@ -320,8 +320,14 @@ function HtmlBody({ message }: { message: Message }) {
       a.setAttribute("target", "_blank");
       a.setAttribute("rel", "noopener noreferrer");
     }
+    // CSP also blocks CSS backgrounds, SVG references, media and stylesheet
+    // imports. Removing only <img src> cannot enforce the privacy setting.
+    const policy = `default-src 'none'; img-src data: blob:${remote ? " https: http:" : ""}; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'`;
     const style = `<style>html,body{margin:0;padding:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#222;background:#fff;word-wrap:break-word}img{max-width:100%;height:auto}table{max-width:100%}</style>`;
-    return { html: `<!doctype html><html><head><meta charset="utf-8">${style}</head><body>${clean.innerHTML}</body></html>`, blocked };
+    // A stylesheet may contain hidden requests; offer the same opt-in even
+    // when there are no ordinary remote <img> elements to count.
+    if (!remote && clean.querySelector("style, [style], [background], image")) blocked++;
+    return { html: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}">${style}</head><body>${clean.innerHTML}</body></html>`, blocked };
   }, [email.html, cids, remote]);
 
   return (

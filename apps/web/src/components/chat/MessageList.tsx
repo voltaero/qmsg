@@ -263,7 +263,7 @@ const MessageRow = memo(function MessageRow({
           )}
         </div>
         <div className="min-w-0 flex-1">
-          {replied !== undefined ? <ReplyQuote message={replied} scope={scope} /> : null}
+          {replied !== undefined ? <ReplyQuote message={replied} scope={scope} providerType={providerType} /> : null}
           {compact ? null : (
             <div className="flex items-baseline gap-2">
               <span className={cn("truncate text-[13.5px] font-semibold", mine && "text-primary")}>{name}</span>
@@ -384,14 +384,14 @@ function EditMessage({ message, onSave, onCancel }: { message: Message; onSave: 
   );
 }
 
-function ReplyQuote({ message, scope }: { message: Message | null; scope: Scope | undefined }) {
+function ReplyQuote({ message, scope, providerType }: { message: Message | null; scope: Scope | undefined; providerType?: string }) {
   return (
     <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <CornerUpLeft className="size-3 shrink-0 -scale-x-100" />
       {message ? (
         <>
           <span className="shrink-0 font-medium text-foreground/80">{userName(scope, message.author)}</span>
-          <span className="truncate">{plainText(message) || "Attachment"}</span>
+          <span className="truncate">{plainText(message, providerType) || "Attachment"}</span>
         </>
       ) : (
         <span className="italic">Replying to an earlier message</span>

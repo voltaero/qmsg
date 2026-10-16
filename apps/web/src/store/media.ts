@@ -87,7 +87,9 @@ export async function mediaUrl(media: Media): Promise<string> {
   }
   const mime = media.mime ?? "application/octet-stream";
   if ("Bytes" in source) {
-    const key = `bytes:${source.Bytes.length}:${source.Bytes.slice(0, 32).join(",")}`;
+    const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(source.Bytes));
+    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const key = `bytes:${mime}:${hash}`;
     return touch(key) ?? remember(key, new Blob([new Uint8Array(source.Bytes)], { type: mime }));
   }
   const id = source.Blob;

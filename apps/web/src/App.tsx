@@ -165,6 +165,7 @@ function Shell() {
 
 function Home() {
   const recent = useStore((s) => s.recent);
+  const types = useStore((s) => s.types);
   const providers = useStore((s) => s.providers);
   const activity = useStore((s) => s.activity);
   const chats = recent
@@ -197,7 +198,7 @@ function Home() {
                     <Avatar name={title} seed={channel.id} media={channel.icon} size={32} square={channel.kind !== "Direct"} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-medium">{title}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{last ? plainText(last) : key.provider}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{last ? plainText(last, types[key.provider]) : key.provider}</span>
                     </span>
                     {last ? <span className="text-2xs text-muted-foreground">{formatStamp(last.sent_at)}</span> : null}
                   </button>

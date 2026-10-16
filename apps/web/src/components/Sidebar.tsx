@@ -314,8 +314,9 @@ const ConversationRow = memo(function ConversationRow({
   const others = (channel.members ?? []).filter((m) => m !== scope.me);
   const single = isConversation(channel) && others.length === 1 ? others[0]! : null;
   const user = single ? scope.users[single] : undefined;
+  const providerType = useStore((s) => s.types[provider]);
   const last = activity?.last;
-  const preview = last ? `${last.author === scope.me ? "You: " : ""}${plainText(last)}` : undefined;
+  const preview = last ? `${last.author === scope.me ? "You: " : ""}${plainText(last, providerType)}` : undefined;
   return (
     <Row
       active={active}

@@ -1,20 +1,10 @@
 import { Fragment, type ReactNode } from "react";
-import { SimpleMarkdown, rulesExtended, type parse } from "discord-markdown-parser";
+import { parseDiscord, type DiscordNode } from "~/lib/discord";
 import type { Scope } from "~/api/types";
 import { safeUrl } from "~/store/media";
 import { ExternalLink, Spoiler } from "./Formatted";
 
-// Use Discord's text rules, including masked links. Keep network-specific
-// tokens that we don't render (timestamps, custom emoji, etc.) as literal text.
-const parser = SimpleMarkdown.parserFor(Object.fromEntries([
-  "blockQuote", "codeBlock", "newline", "escape", "autolink", "url", "link",
-  "em", "strong", "underline", "strikethrough", "inlineCode", "text", "br",
-  "spoiler", "heading", "subtext", "user", "channel", "role", "everyone", "here",
-].map((name) => [name, rulesExtended[name]!]).concat([["list", SimpleMarkdown.defaultRules.list]])));
-
-type Node = ReturnType<typeof parse>[number];
-
-function render(nodes: Node[], scope?: Scope): ReactNode {
+function render(nodes: DiscordNode[], scope?: Scope): ReactNode {
   return nodes.map((node, key) => {
     const children = Array.isArray(node.content) ? render(node.content, scope) : node.content;
     switch (node.type) {
@@ -29,7 +19,7 @@ function render(nodes: Node[], scope?: Scope): ReactNode {
       case "heading": return <div key={key} role="heading" aria-level={node.level} className="my-1 text-lg font-semibold">{children}</div>;
       case "subtext": return <small key={key} className="block text-muted-foreground">{children}</small>;
       case "list": {
-        const items = node.items.map((item: Node[], i: number) => <li key={i}>{render(item, scope)}</li>);
+        const items = node.items.map((item: DiscordNode[], i: number) => <li key={i}>{render(item, scope)}</li>);
         return node.ordered
           ? <ol key={key} start={node.start} className="my-1 list-decimal pl-6 whitespace-normal">{items}</ol>
           : <ul key={key} className="my-1 list-disc pl-6 whitespace-normal">{items}</ul>;
@@ -49,6 +39,5 @@ function render(nodes: Node[], scope?: Scope): ReactNode {
 }
 
 export function DiscordText({ text, scope }: { text: string; scope?: Scope }) {
-  // _list permits lists at line starts while preserving Discord's inline rules.
-  return <>{render(parser(text, { inline: true, _list: true }), scope)}</>;
+  return <>{render(parseDiscord(text), scope)}</>;
 }

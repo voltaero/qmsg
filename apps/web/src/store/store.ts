@@ -352,7 +352,7 @@ function notify(key: ChannelKey, message: Message) {
   const author = userName(scope, message.author);
   const where = channel ? channelTitle(scope, channel) : key.channel.channel;
   const title = channel && (channel.kind === "Direct" || where === author) ? author : `${author} · ${where}`;
-  const n = new Notification(title, { body: plainText(message).slice(0, 200), tag: keyString(key) });
+  const n = new Notification(title, { body: plainText(message, get().types[key.provider]).slice(0, 200), tag: keyString(key) });
   n.onclick = () => {
     window.focus();
     show(key);

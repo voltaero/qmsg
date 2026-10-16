@@ -205,7 +205,7 @@ export function Composer({
           <div className="flex items-center gap-2 border-b border-border px-3.5 py-2 text-xs text-muted-foreground">
             <span className="shrink-0">Replying to</span>
             <span className="shrink-0 font-medium text-foreground">{replied ? userName(scope, replied.author) : "message"}</span>
-            <span className="min-w-0 flex-1 truncate">{replied ? plainText(replied) : ""}</span>
+            <span className="min-w-0 flex-1 truncate">{replied ? plainText(replied, providerType) : ""}</span>
             <button onClick={() => setReplyTo(channelKey, null)} className="rounded p-0.5 hover:bg-accent" aria-label="Cancel reply">
               <X className="size-3.5" />
             </button>

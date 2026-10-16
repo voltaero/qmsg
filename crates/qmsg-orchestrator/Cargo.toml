@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow = "1.0"
 async-stream = "0.3"
+axum = { version = "0.8", default-features = false }
 chacha20poly1305 = "0.11"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 getrandom = "0.4"
@@ -26,6 +27,9 @@ tokio-tungstenite = "0.30"
 toml = "1.1"
 tonic = { version = "0.14", features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost = "0.14"
+tonic-web = "0.14"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wasmtime = "49"

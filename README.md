@@ -14,6 +14,7 @@ This Cargo workspace contains:
 | `providers/discord` | `.wasm` component (Go) | Discord user accounts, with ningen |
 | `providers/email` | `.wasm` component (Go) | IMAP/SMTP and Gmail OAuth; [setup](providers/email/README.md) |
 | `services/browser-login` | Bun service | Host-side browser logins |
+| `apps/web` | Vite app | [Web app](apps/web/README.md) |
 
 ## Terminal app
 
@@ -440,6 +441,12 @@ The orchestrator's tests build the echo provider themselves, so they need the
 `wasm32-wasip2` target installed. The Go provider tests (`discord`, `go_net`)
 also need Go 1.24 or newer, and fetch pinned tools into `target/` the first
 time; see `sdk/go/README.md`.
+
+## Web app
+
+The browser client lives in [apps/web](apps/web/README.md). Run `bun run dev`
+there and choose **Try the demo**, or pair it with your orchestrator, which can
+also serve the built app beside its API.
 
 ## iOS app
 
